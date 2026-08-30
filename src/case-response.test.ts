@@ -1,0 +1,257 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  dispatch,
+  getSnapshot,
+  type StoragePort,
+} from './app-state.ts';
+import { initializeTestPersistence as initializePersistence } from './test-fixtures.ts';
+
+class ResponseStorage implements StoragePort {
+  readonly values = new Map<string, string>();
+  failWrites = false;
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string): void {
+    if (this.failWrites) throw new Error('write failed');
+    this.values.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+}
+
+test('Case responses are human-owned, bounded, isolated, and durable', () => {
+  const storage = new ResponseStorage();
+  assert.equal(initializePersistence(() => storage).kind, 'ready');
+
+  const trafficItemBefore = getSnapshot().project.timeline[0];
+  const trafficTagBefore = trafficItemBefore.tags[0];
+  const mediumBefore = trafficTagBefore.cases[1];
+  const originalSuggestions = [...trafficTagBefore.cases[0].suggestedActions];
+
+  assert.equal(
+    dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: 'case-traffic-light',
+        disposition: 'covered',
+        actions: [],
+        when: '',
+        status: null,
+      },
+    }).ok,
+    true,
+  );
+  const coveredState = getSnapshot();
+  const coveredItem = coveredState.project.timeline[0];
+  const coveredTag = coveredItem.tags[0];
+  assert.equal(coveredItem.version, trafficItemBefore.version);
+  assert.equal(coveredTag.version, trafficTagBefore.version);
+  assert.strictEqual(coveredTag.cases[1], mediumBefore);
+  assert.equal(coveredTag.cases[0].version, 2);
+  assert.deepEqual(coveredTag.cases[0].response, {
+    disposition: 'covered',
+    actions: [],
+    when: '',
+    status: null,
+  });
+
+  assert.equal(
+    dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: 'case-traffic-light',
+        disposition: 'accept',
+        actions: ['Take the usual route after checking the latest traffic.'],
+        when: '',
+        status: null,
+      },
+    }).ok,
+    true,
+  );
+  const acceptedCase = getSnapshot().project.timeline[0].tags[0].cases[0];
+  assert.equal(acceptedCase.response?.disposition, 'accept');
+  assert.deepEqual(acceptedCase.suggestedActions, originalSuggestions);
+  assert.notStrictEqual(
+    acceptedCase.response?.actions,
+    acceptedCase.suggestedActions,
+  );
+
+  assert.equal(
+    dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: 'case-traffic-medium',
+        disposition: 'prepare',
+        actions: ['Check the airport rail route before leaving.'],
+        when: 'Before leaving',
+        status: 'pending',
+      },
+    }).ok,
+    true,
+  );
+  assert.deepEqual(
+    getSnapshot().project.timeline[0].tags[0].cases[1].response,
+    {
+      disposition: 'prepare',
+      actions: ['Check the airport rail route before leaving.'],
+      when: 'Before leaving',
+      status: 'pending',
+    },
+  );
+
+  const planB = {
+    type: 'case.response.save',
+    payload: {
+      caseId: 'case-traffic-heavy',
+      disposition: 'plan_b',
+      actions: [
+        'Switch to the airport rail route.',
+        'Ask the airline about a later flight before leaving home.',
+      ],
+      when: '',
+      status: null,
+    },
+  } as const;
+  assert.equal(dispatch(planB).ok, true);
+  const planBState = getSnapshot();
+  assert.deepEqual(
+    planBState.project.timeline[0].tags[0].cases[2].response?.actions,
+    planB.payload.actions,
+  );
+  assert.deepEqual(initializePersistence(() => storage), {
+    kind: 'ready',
+    source: 'stored',
+  });
+  assert.deepEqual(
+    getSnapshot().project.timeline[0].tags[0].cases[2].response?.actions,
+    planB.payload.actions,
+  );
+
+  const unchanged = getSnapshot();
+  const unchangedResult = dispatch(planB);
+  assert.equal(unchangedResult.ok, true);
+  assert.equal(unchangedResult.code, 'NO_CHANGES');
+  assert.strictEqual(getSnapshot(), unchanged);
+
+  const invalidPayloads = [
+    { disposition: 'plan_b', actions: [] },
+    { disposition: 'plan_b', actions: ['1', '2', '3', '4', '5', '6'] },
+    { disposition: 'accept', actions: ['1', '2'] },
+    { disposition: 'covered', actions: ['not allowed'] },
+  ] as const;
+  for (const invalid of invalidPayloads) {
+    const beforeInvalid = getSnapshot();
+    const result = dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: 'case-traffic-heavy',
+        disposition: invalid.disposition,
+        actions: [...invalid.actions],
+        when: '',
+        status: null,
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'INVALID_INPUT');
+    assert.strictEqual(getSnapshot(), beforeInvalid);
+  }
+
+  const beforeWrongFields = getSnapshot();
+  const wrongFields = dispatch({
+    type: 'case.response.save',
+    payload: {
+      caseId: 'case-traffic-heavy',
+      disposition: 'accept',
+      actions: ['Use the rail route.'],
+      when: 'Only prepare may use this',
+      status: null,
+    },
+  });
+  assert.equal(wrongFields.ok, false);
+  assert.strictEqual(getSnapshot(), beforeWrongFields);
+
+  const review = dispatch({
+    type: 'review.request',
+    payload: { kind: 'case_actions', ownerId: 'case-taxi-late' },
+  });
+  assert.equal(review.ok, true);
+  assert.ok(getSnapshot().project.activeReviewRequest);
+  assert.equal(
+    dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: 'case-taxi-late',
+        disposition: 'dismiss',
+        actions: [],
+        when: '',
+        status: null,
+      },
+    }).ok,
+    true,
+  );
+  assert.equal(getSnapshot().project.activeReviewRequest, null);
+
+  assert.equal(getSnapshot().project.viewMode, 'editing');
+  assert.equal(
+    dispatch({
+      type: 'project.view.set',
+      payload: { viewMode: 'final' },
+    }).ok,
+    true,
+  );
+  assert.equal(getSnapshot().project.viewMode, 'final');
+  assert.deepEqual(initializePersistence(() => storage), {
+    kind: 'ready',
+    source: 'stored',
+  });
+  assert.equal(getSnapshot().project.viewMode, 'final');
+  assert.deepEqual(
+    getSnapshot().project.timeline[0].tags[0].cases[2].response?.actions,
+    planB.payload.actions,
+  );
+  assert.equal(
+    dispatch({
+      type: 'project.view.set',
+      payload: { viewMode: 'editing' },
+    }).ok,
+    true,
+  );
+  const beforeNoChange = getSnapshot();
+  const noViewChange = dispatch({
+    type: 'project.view.set',
+    payload: { viewMode: 'editing' },
+  });
+  assert.equal(noViewChange.ok, true);
+  assert.equal(noViewChange.code, 'NO_CHANGES');
+  assert.strictEqual(getSnapshot(), beforeNoChange);
+
+  storage.failWrites = true;
+  const beforeFailedSave = getSnapshot();
+  const failedSave = dispatch({
+    type: 'case.response.save',
+    payload: {
+      caseId: 'case-taxi-missing',
+      disposition: 'accept',
+      actions: ['Request another car.'],
+      when: '',
+      status: null,
+    },
+  });
+  assert.equal(failedSave.ok, false);
+  assert.equal(failedSave.code, 'SAVE_FAILED');
+  assert.strictEqual(getSnapshot(), beforeFailedSave);
+
+  const failedFinish = dispatch({
+    type: 'project.view.set',
+    payload: { viewMode: 'final' },
+  });
+  assert.equal(failedFinish.ok, false);
+  assert.equal(failedFinish.code, 'SAVE_FAILED');
+  assert.strictEqual(getSnapshot(), beforeFailedSave);
+});

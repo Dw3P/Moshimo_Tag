@@ -1,0 +1,82 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing and build output
+/coverage
+/.next/
+/.vinext/
+/out/
+/dist/
+/.wrangler/
+/.cache/
+.eslintcache
+
+# local environment and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+/.npmrc
+/.netrc
+/credentials.json
+/secrets.json
+/auth.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.local
+
+# local databases and browser/session state
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.session
+cookies.json
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# generated TypeScript files
+next-env.d.ts
+*.tsbuildinfo
+
+# editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# deployment and disposable artifacts
+.vercel
+/outputs/
+/work/
+/tmp/
+
+# local agent, hackathon, and QA state
+/.agents/
+/.codex/
+/.devpost-hackathon-state.json
+/design-qa.md
+
+# test runner artifacts
+/playwright-report/
+/test-results/
