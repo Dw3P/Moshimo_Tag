@@ -753,9 +753,9 @@ function EmptyWorkspace({
                 <figure className="tutorial-shot tutorial-shot-case">
                   <Image
                     alt="One expanded What if with its situations and response choices"
-                    height={712}
+                    height={390}
                     src="/tutorial/steps/03-situation-response.png"
-                    width={1265}
+                    width={697}
                   />
                 </figure>
               </li>
