@@ -76,6 +76,7 @@ Thumbs.db
 /.codex/
 /.devpost-hackathon-state.json
 /design-qa.md
+/.verify-gate/
 
 # test runner artifacts
 /playwright-report/

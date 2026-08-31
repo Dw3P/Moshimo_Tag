@@ -1871,10 +1871,22 @@ button:disabled {
 }
 
 .case-choice-group button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   min-width: 0;
-  padding-inline: 7px;
-  font-size: 11px;
+  padding-inline: 6px;
+  font-size: 10.5px;
   font-weight: 750;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.case-choice-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
 }
 
 .case-choice-group button.is-selected {

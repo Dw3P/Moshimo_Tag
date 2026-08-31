@@ -175,14 +175,27 @@ function canMoveEditingEntry(
 }
 
 type InterfaceIconName =
+  | 'call-split'
   | 'chevron-right'
+  | 'check-circle-outline'
+  | 'close'
   | 'delete'
   | 'info-outline'
   | 'person'
   | 'redo'
+  | 'schedule'
   | 'smart-toy'
   | 'sort'
-  | 'undo';
+  | 'undo'
+  | 'verified-user';
+
+const dispositionIconNames: Record<CaseDisposition, InterfaceIconName> = {
+  covered: 'verified-user',
+  accept: 'check-circle-outline',
+  prepare: 'schedule',
+  plan_b: 'call-split',
+  dismiss: 'close',
+};
 
 function InterfaceIcon({
   className,
@@ -1194,7 +1207,11 @@ function CaseCard({
                 type="button"
                 onClick={() => chooseDisposition(disposition)}
               >
-                {dispositionLabels[disposition]}
+                <InterfaceIcon
+                  className="case-choice-icon"
+                  name={dispositionIconNames[disposition]}
+                />
+                <span>{dispositionLabels[disposition]}</span>
               </button>
             ),
           )}
