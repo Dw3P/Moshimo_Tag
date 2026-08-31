@@ -44,18 +44,26 @@ function submittedForReview(event: FormEvent<HTMLFormElement>): boolean {
 }
 
 const dispositionLabels: Record<CaseDisposition, string> = {
-  covered: 'Covered',
-  accept: 'Accept',
+  covered: 'Already covered',
+  accept: 'Accept risk',
   prepare: 'Prepare',
   plan_b: 'Plan B',
   dismiss: 'Dismiss',
+};
+
+const dispositionDescriptions: Record<CaseDisposition, string> = {
+  covered: 'The main Plan already handles this Situation.',
+  accept: 'Continue without adding a preventive action.',
+  prepare: 'Create one action to prepare ahead.',
+  plan_b: 'Choose one or more alternative options.',
+  dismiss: 'Remove this Situation from the current Final plan.',
 };
 
 type ReviewActivityState = 'waiting' | 'reviewing' | 'saving';
 
 type EditableCaseDisposition = Extract<
   CaseDisposition,
-  'accept' | 'prepare' | 'plan_b'
+  'covered' | 'accept' | 'prepare' | 'plan_b'
 >;
 
 interface CaseResponseDraft {
@@ -65,7 +73,7 @@ interface CaseResponseDraft {
 }
 
 const AGENT_EXAMPLE_REQUEST =
-  'On this open Moshimo Tag page, use WebMCP to create a Project for [what you want to plan — e.g. baking a baguette]. Add the expected Plan, likely What ifs, Cases, and sensible response candidates. Leave every decision undecided for me to review.';
+  'On this open Moshimo Tag page, use WebMCP to create a Project for [what you want to plan — e.g. baking a baguette]. Add the expected Plan, likely What ifs, situations, and sensible response candidates. Leave every decision undecided for me to review.';
 
 function normalizeReviewActivity(value: unknown): ReviewActivityState {
   const activity =
@@ -110,7 +118,7 @@ function reviewScopeLabel(
         .flatMap((item) => item.tags)
         .flatMap((tag) => tag.cases)
         .find((candidate) => candidate.id === ownerId);
-      return `Case · ${caseItem?.title ?? 'selected Case'}`;
+      return `Situation · ${caseItem?.title ?? 'selected situation'}`;
     }
   }
 }
@@ -626,7 +634,7 @@ function ProjectDeleteDialog({
           </button>
         </div>
         <p className="project-dialog-copy" id="delete-project-description">
-          This removes the Project and its Plan, What ifs, Cases, and responses
+          This removes the Project and its Plan, What ifs, situations, and responses
           from this browser. This action cannot be undone.
         </p>
         <div className="form-actions project-dialog-actions">
@@ -744,10 +752,10 @@ function EmptyWorkspace({
                 </p>
                 <figure className="tutorial-shot tutorial-shot-case">
                   <Image
-                    alt="One expanded What if with its content and Case response choices"
-                    height={390}
-                    src="/tutorial/steps/03-case-response.jpg"
-                    width={650}
+                    alt="One expanded What if with its situations and response choices"
+                    height={712}
+                    src="/tutorial/steps/03-situation-response.png"
+                    width={1265}
                   />
                 </figure>
               </li>
@@ -782,6 +790,15 @@ function EmptyWorkspace({
           </h2>
           <div className="agent-start" id="agent-start">
             <p className="guide-kicker">WebMCP · one request</p>
+            <figure className="agent-flow-visual">
+              <Image
+                alt="A person asks an agent, the agent applies the request through WebMCP, and a Plan with linked What ifs is ready"
+                height={1200}
+                src="/tutorial/agent-webmcp-flow.svg"
+                unoptimized
+                width={1200}
+              />
+            </figure>
             <p className="agent-start-intro">
               Give ChatGPT or Codex a request, optionally attach source material,
               and ask it to work on this open Moshimo Tag page through WebMCP.
@@ -894,8 +911,11 @@ function CaseCard({
     const suggested = caseItem.suggestedActionSource
       ? caseItem.suggestedActions
       : [];
+    const isOptionalMemo = disposition === 'covered' || disposition === 'accept';
     const actions = existing
-      ? [...existing.actions]
+      ? isOptionalMemo && existing.actions.length === 0
+        ? ['']
+        : [...existing.actions]
       : disposition === 'plan_b'
         ? caseItem.planBOptionsDraft !== null
           ? caseItem.planBOptionsDraft.length
@@ -904,7 +924,9 @@ function CaseCard({
           : suggested.length
             ? suggested.slice(0, 5)
             : ['']
-        : [suggested[0] ?? ''];
+        : isOptionalMemo
+          ? ['']
+          : [suggested[0] ?? ''];
     return {
       actions,
       when: existing?.when ?? '',
@@ -947,12 +969,12 @@ function CaseCard({
     focusAfterRender.current = null;
   }, [draftDisposition, editing, caseItem.response]);
 
-  function saveDecision(disposition: 'covered' | 'dismiss') {
+  function saveDismissedDecision() {
     const result = dispatch({
       type: 'case.response.save',
       payload: {
         caseId: caseItem.id,
-        disposition,
+        disposition: 'dismiss',
         actions: [],
         when: '',
         status: null,
@@ -961,7 +983,7 @@ function CaseCard({
     if (
       onFeedback(
         result,
-        `${dispositionLabels[disposition]} saved for ${caseItem.title}.`,
+        `${dispositionLabels.dismiss} saved for ${caseItem.title}.`,
       )
     ) {
       closeEditor('saved');
@@ -969,8 +991,8 @@ function CaseCard({
   }
 
   function chooseDisposition(disposition: CaseDisposition) {
-    if (disposition === 'covered' || disposition === 'dismiss') {
-      saveDecision(disposition);
+    if (disposition === 'dismiss') {
+      saveDismissedDecision();
       return;
     }
     beginDisposition(disposition);
@@ -979,32 +1001,33 @@ function CaseCard({
   function editSavedResponse() {
     const response = caseItem.response;
     if (!response) return;
-    if (response.disposition === 'covered' || response.disposition === 'dismiss') {
+    if (response.disposition === 'dismiss') {
       setEditing(true);
       setDraftDisposition(null);
       return;
     }
     beginDisposition(response.disposition);
-    if (response.actions.length === 0) {
-      focusAfterRender.current = 'choices';
-    }
   }
 
   function saveResponse(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (
-      !draftDisposition ||
-      !drafts[draftDisposition]
-    ) {
+    if (!draftDisposition || !drafts[draftDisposition]) {
       return;
     }
     const draft = drafts[draftDisposition];
+    const isOptionalMemo =
+      draftDisposition === 'covered' || draftDisposition === 'accept';
+    const optionalMemo = draft.actions[0]?.trim() ?? '';
     const result = dispatch({
       type: 'case.response.save',
       payload: {
         caseId: caseItem.id,
         disposition: draftDisposition,
-        actions: draft.actions,
+        actions: isOptionalMemo
+          ? optionalMemo
+            ? [optionalMemo]
+            : []
+          : draft.actions,
         when: draftDisposition === 'prepare' ? draft.when : '',
         status: draftDisposition === 'prepare' ? draft.status : null,
       },
@@ -1060,12 +1083,13 @@ function CaseCard({
   const showChoices = response === null || editing;
   const showActionEditor =
     editing &&
-    (draftDisposition === 'accept' ||
+    (draftDisposition === 'covered' ||
+      draftDisposition === 'accept' ||
       draftDisposition === 'prepare' ||
       draftDisposition === 'plan_b');
   const deleteActionTitle = isOnlyCase
-    ? 'Delete Case and this What if'
-    : 'Delete Case';
+    ? 'Delete Situation and this What if'
+    : 'Delete Situation';
 
   return (
     <article
@@ -1073,7 +1097,7 @@ function CaseCard({
       className="case-card"
     >
       <div className="case-heading">
-        <span>Case {index + 1}</span>
+        <span>Situation {index + 1}</span>
         <h4 id={`case-heading-${caseItem.id}`}>{caseItem.title}</h4>
         <div className="case-heading-controls">
           <span className={`case-status ${response ? 'is-decided' : ''}`}>
@@ -1082,7 +1106,7 @@ function CaseCard({
               : '! Undecided'}
           </span>
           <button
-            aria-label={`Delete Case ${caseItem.title}`}
+            aria-label={`Delete Situation ${caseItem.title}`}
             className="inline-delete-action"
             title={deleteActionTitle}
             type="button"
@@ -1147,29 +1171,43 @@ function CaseCard({
           className="saved-case-response"
           aria-label={`Saved response for ${caseItem.title}`}
         >
-          {response.actions.length ? (
-            <ol
-              className={
-                response.disposition === 'plan_b'
-                  ? 'saved-plan-b-options'
-                  : undefined
-              }
-            >
+          {response.disposition === 'covered' ? (
+            <div className="saved-decision-summary">
+              <strong>Handled in the main Plan</strong>
+              {response.actions[0] ? (
+                <p>
+                  <span>Memo</span>
+                  {response.actions[0]}
+                </p>
+              ) : (
+                <p>No memo added.</p>
+              )}
+            </div>
+          ) : response.disposition === 'accept' ? (
+            <div className="saved-decision-summary">
+              <strong>Risk accepted</strong>
+              {response.actions[0] ? (
+                <p>
+                  <span>Memo</span>
+                  {response.actions[0]}
+                </p>
+              ) : (
+                <p>No additional action planned.</p>
+              )}
+            </div>
+          ) : response.disposition === 'plan_b' ? (
+            <ol className="saved-plan-b-options">
               {response.actions.map((action, actionIndex) => (
                 <li key={`${action}-${actionIndex}`}>
-                  {response.disposition === 'plan_b' ? (
-                    <span>Option {actionIndex + 1}</span>
-                  ) : null}
+                  <span>Option {actionIndex + 1}</span>
                   <p>{action}</p>
                 </li>
               ))}
             </ol>
+          ) : response.disposition === 'prepare' ? (
+            <p>{response.actions[0]}</p>
           ) : (
-            <p>
-              {response.disposition === 'covered'
-                ? 'This case is already covered by your Plan.'
-                : 'This case will not appear in the final view.'}
-            </p>
+            <p>This situation will not appear in the final view.</p>
           )}
           {response.disposition === 'prepare' ? (
             <p className="preparation-meta">
@@ -1198,12 +1236,13 @@ function CaseCard({
           {(Object.keys(dispositionLabels) as CaseDisposition[]).map(
             (disposition) => (
               <button
-                aria-label={`${dispositionLabels[disposition]} for ${caseItem.title}`}
+                aria-label={`${dispositionLabels[disposition]} for ${caseItem.title}. ${dispositionDescriptions[disposition]}`}
                 aria-pressed={draftDisposition === disposition}
                 className={
                   draftDisposition === disposition ? 'is-selected' : undefined
                 }
                 key={disposition}
+                title={dispositionDescriptions[disposition]}
                 type="button"
                 onClick={() => chooseDisposition(disposition)}
               >
@@ -1230,34 +1269,69 @@ function CaseCard({
                 Your response · {dispositionLabels[draftDisposition]}
               </p>
               <strong>
-                {draftDisposition === 'plan_b'
-                  ? 'Write one or more options for this Case'
-                  : 'Write the action you want to own'}
+                {draftDisposition === 'covered'
+                  ? 'Record how this is already handled'
+                  : draftDisposition === 'accept'
+                    ? 'Accept this Situation without a preventive action'
+                    : draftDisposition === 'plan_b'
+                      ? 'Write one or more options for this Situation'
+                      : 'Write the action you want to own'}
               </strong>
+              {draftDisposition === 'covered' ||
+              draftDisposition === 'accept' ? (
+                <p className="response-editor-guidance">
+                  {draftDisposition === 'covered'
+                    ? 'Add a memo if it helps identify the existing coverage.'
+                    : 'Add a memo if it helps explain the decision.'}{' '}
+                  This is optional.
+                </p>
+              ) : null}
             </div>
             <span className="human-label">
               {draftDisposition === 'plan_b' &&
               caseItem.planBOptionsDraft !== null
                 ? 'Agent draft · not saved'
-                : 'Human response · not saved'}
+                : 'Human decision · not saved'}
             </span>
           </div>
 
           {activeDraft?.actions.map((action, actionIndex) => (
             <div className="response-action-field" key={actionIndex}>
               <label>
-                {draftDisposition === 'plan_b'
-                  ? `Plan B option ${actionIndex + 1}`
-                  : 'Your action'}
+                <span className="response-field-title">
+                  {draftDisposition === 'covered' ||
+                  draftDisposition === 'accept'
+                    ? 'Memo'
+                    : draftDisposition === 'plan_b'
+                      ? `Plan B option ${actionIndex + 1}`
+                      : 'Your action'}
+                  {draftDisposition === 'covered' ||
+                  draftDisposition === 'accept' ? (
+                    <span>(optional)</span>
+                  ) : null}
+                </span>
                 <textarea
                   aria-label={`${
-                    draftDisposition === 'plan_b'
-                      ? `Plan B option ${actionIndex + 1}`
-                      : 'Your action'
+                    draftDisposition === 'covered' ||
+                    draftDisposition === 'accept'
+                      ? 'Optional memo'
+                      : draftDisposition === 'plan_b'
+                        ? `Plan B option ${actionIndex + 1}`
+                        : 'Your action'
                   } for ${caseItem.title}`}
                   autoFocus={actionIndex === 0}
                   maxLength={1200}
-                  required
+                  placeholder={
+                    draftDisposition === 'covered'
+                      ? 'e.g. The main Plan already includes a backup batch.'
+                      : draftDisposition === 'accept'
+                        ? 'e.g. Continue as an experiment and accept the result.'
+                        : undefined
+                  }
+                  required={
+                    draftDisposition !== 'covered' &&
+                    draftDisposition !== 'accept'
+                  }
                   rows={3}
                   value={action}
                   onChange={(event) =>
@@ -1440,8 +1514,8 @@ function TagCard({
       onFeedback(
         result,
         requestReview
-          ? `Case added. Review requested for Case · ${title}. Waiting for an AI agent.`
-          : 'Case added to this What if.',
+          ? `Situation added. Review requested for Situation · ${title}. Waiting for an AI agent.`
+          : 'Situation added to this What if.',
       )
     ) {
       form.reset();
@@ -1457,8 +1531,8 @@ function TagCard({
     onFeedback(
       result,
       tag.cases.length === 1
-        ? `Case ${caseItem.title} and its What if deleted.`
-        : `Case ${caseItem.title} deleted.`,
+        ? `Situation ${caseItem.title} and its What if deleted.`
+        : `Situation ${caseItem.title} deleted.`,
     );
   }
 
@@ -1630,9 +1704,9 @@ function TagCard({
           </div>
           {showAddCase ? (
             <form className="compact-composer" onSubmit={addCase}>
-              <p className="eyebrow">Add a Case</p>
+              <p className="eyebrow">Add a Situation</p>
               <label>
-                Case title
+                Situation title
                 <input
                   maxLength={120}
                   name="title"
@@ -1645,7 +1719,7 @@ function TagCard({
                 <textarea
                   maxLength={1200}
                   name="ownAction"
-                  placeholder="What might you do in this case?"
+                  placeholder="What might you do in this situation?"
                   rows={3}
                 />
               </label>
@@ -1671,11 +1745,11 @@ function TagCard({
           ) : (
             <div className="tag-actions">
               <button
-                aria-label={`Add a Case to ${tag.question}`}
+                aria-label={`Add a Situation to ${tag.question}`}
                 type="button"
                 onClick={() => setShowAddCase(true)}
               >
-                + Add Case
+                + Add Situation
               </button>
               {LEGACY_AI_UI_ENABLED ? (
                 <button
@@ -1744,7 +1818,7 @@ function ResolvedTagCard({
             {tag.cases.map((caseItem, index) => (
               <article className="case-card resolved-case-card" key={caseItem.id}>
                 <div className="case-heading">
-                  <span>Case {index + 1}</span>
+                  <span>Situation {index + 1}</span>
                   <h4>{caseItem.title}</h4>
                   <span className="resolved-case-status">Archived</span>
                 </div>
@@ -1909,7 +1983,7 @@ function TimelineLaneHeadings({
       </div>
       <div>
         <span>What if?</span>
-        <small>Cases and your response at each moment</small>
+        <small>Situations and your response at each moment</small>
         {LEGACY_AI_UI_ENABLED ? (
           <button
             disabled={aiRequestBlocked}
@@ -1946,12 +2020,39 @@ function FinalResponseCard({
   return (
     <section className="final-response-case">
       <header className="final-response-case-heading">
-        <span>Case {caseIndex + 1}</span>
+        <span>Situation {caseIndex + 1}</span>
         <h3>{caseItem.title}</h3>
       </header>
-      <section className="final-response">
-        {response.actions.length === 0 ? (
-          <p>Covered by your Plan.</p>
+      <section
+        className={`final-response is-${response.disposition.replace('_', '-')}`}
+      >
+        <div className="final-response-decision">
+          <InterfaceIcon
+            className="final-response-decision-icon"
+            name={dispositionIconNames[response.disposition]}
+          />
+          <strong>{dispositionLabels[response.disposition]}</strong>
+        </div>
+        {response.disposition === 'covered' ? (
+          <div className="final-response-copy">
+            <p>Handled in the main Plan.</p>
+            {response.actions[0] ? (
+              <p className="final-response-memo">
+                <span>Memo</span>
+                {response.actions[0]}
+              </p>
+            ) : null}
+          </div>
+        ) : response.disposition === 'accept' ? (
+          <div className="final-response-copy">
+            <p>No additional action planned.</p>
+            {response.actions[0] ? (
+              <p className="final-response-memo">
+                <span>Memo</span>
+                {response.actions[0]}
+              </p>
+            ) : null}
+          </div>
         ) : response.disposition === 'plan_b' ? (
           <ol className="final-plan-b-options">
             {response.actions.map((action, index) => (
@@ -2193,24 +2294,64 @@ function AppHeader({
                 </button>
               </div>
               <p className="webmcp-capabilities-intro">
-                Ask ChatGPT or Codex to work on this open page—no plugin setup
+                Ask ChatGPT or Codex to draft and update this Project through
+                WebMCP.
               </p>
-              <ul>
-                <li>Projects: list, create, open, and update.</li>
-                <li>Plan: create, read, update, and delete items.</li>
+              <ul className="webmcp-capability-list">
                 <li>
-                  What if / Impact: create, read, update, delete, and sort by
-                  impact.
+                  <span className="webmcp-capability-icon is-plan">
+                    <InterfaceIcon
+                      className="webmcp-capability-icon-image"
+                      name="schedule"
+                    />
+                  </span>
+                  <span>
+                    <strong>Build the Project</strong>
+                    <span>Create and update the Plan in its intended order.</span>
+                  </span>
                 </li>
                 <li>
-                  Possible situations and practical options: create, read,
-                  update, and delete.
+                  <span className="webmcp-capability-icon is-what-if">
+                    <InterfaceIcon
+                      className="webmcp-capability-icon-image"
+                      name="call-split"
+                    />
+                  </span>
+                  <span>
+                    <strong>Prepare the possibilities</strong>
+                    <span>
+                      Add What ifs, Situations, candidate actions, and Plan B
+                      options.
+                    </span>
+                  </span>
                 </li>
                 <li>
-                  Your decisions: keep, change, prepare ahead, choose another
-                  option, or dismiss in this page. WebMCP cannot decide for you.
+                  <span className="webmcp-capability-icon is-human">
+                    <InterfaceIcon
+                      className="webmcp-capability-icon-image"
+                      name="verified-user"
+                    />
+                  </span>
+                  <span>
+                    <strong>You make every decision</strong>
+                    <span>
+                      Only you choose Already covered, Accept risk, Prepare,
+                      Plan B, or Dismiss.
+                    </span>
+                  </span>
                 </li>
-                <li>Final summary: read your selected responses in Final view.</li>
+                <li>
+                  <span className="webmcp-capability-icon is-final">
+                    <InterfaceIcon
+                      className="webmcp-capability-icon-image"
+                      name="check-circle-outline"
+                    />
+                  </span>
+                  <span>
+                    <strong>Review the Final plan</strong>
+                    <span>Read the responses you selected, grouped by Situation.</span>
+                  </span>
+                </li>
               </ul>
             </aside>
           ) : null}
@@ -2901,7 +3042,7 @@ export default function Home() {
             }
           >
             {appState.project.viewMode === 'editing'
-              ? 'Save & finish'
+              ? 'View final plan'
               : 'Edit plan'}
           </button>
         </div>
@@ -2962,7 +3103,7 @@ export default function Home() {
           }
         >
           {appState.project.viewMode === 'editing'
-            ? 'Save & finish'
+            ? 'View final plan'
             : 'Edit plan'}
         </button>
       </section>
@@ -3209,11 +3350,11 @@ export default function Home() {
                     />
                   </label>
                   <label>
-                    First Case
+                    First Situation
                     <input
                       maxLength={120}
                       name="caseTitle"
-                      placeholder="Describe one possible case"
+                      placeholder="Describe one possible situation"
                       required
                     />
                   </label>
@@ -3222,7 +3363,7 @@ export default function Home() {
                     <textarea
                       maxLength={1200}
                       name="ownAction"
-                      placeholder="What might you do in this case?"
+                      placeholder="What might you do in this situation?"
                       rows={3}
                     />
                   </label>

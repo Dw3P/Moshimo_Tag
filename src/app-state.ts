@@ -1764,11 +1764,13 @@ function validateStoredCaseResponse(value: unknown): boolean {
     return false;
   }
 
-  if (value.disposition === 'covered' || value.disposition === 'dismiss') {
+  if (value.disposition === 'dismiss') {
     return value.actions.length === 0 && value.when === '' && value.status === null;
   }
-  if (value.disposition === 'accept') {
-    return value.actions.length === 1 && value.when === '' && value.status === null;
+  if (value.disposition === 'covered' || value.disposition === 'accept') {
+    return (
+      value.actions.length <= 1 && value.when === '' && value.status === null
+    );
   }
   if (value.disposition === 'prepare') {
     return value.actions.length === 1;
@@ -6400,7 +6402,7 @@ export function dispatch(raw: unknown): CommandResult {
       basedOnProjectVersion: projectVersion,
       question,
       rationale: 'Added by you to prepare this part of the Plan.',
-      summary: 'Decide what you want to do in each case.',
+      summary: 'Decide what you want to do in each situation.',
       impact: null,
       cases: [
         {
@@ -6578,12 +6580,13 @@ export function dispatch(raw: unknown): CommandResult {
         true,
       );
     }
-    const zeroActionDisposition =
-      disposition === 'covered' || disposition === 'dismiss';
-    const oneActionDisposition =
-      disposition === 'accept' || disposition === 'prepare';
+    const zeroActionDisposition = disposition === 'dismiss';
+    const optionalMemoDisposition =
+      disposition === 'covered' || disposition === 'accept';
+    const oneActionDisposition = disposition === 'prepare';
     const hasValidShape =
       (zeroActionDisposition && actions.length === 0) ||
+      (optionalMemoDisposition && actions.length <= 1) ||
       (oneActionDisposition && actions.length === 1) ||
       (disposition === 'plan_b' && actions.length >= 1 && actions.length <= 5);
     const hasValidPreparationFields =

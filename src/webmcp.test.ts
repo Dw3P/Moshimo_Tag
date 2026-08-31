@@ -808,6 +808,17 @@ test('Direct Site tools discover eleven static tools and expose bounded section 
   assert.equal(registered[10].annotations?.readOnlyHint, true);
   assert.equal(registered[10].annotations?.untrustedContentHint, true);
 
+  const editSituationTool = findTool(registered, 'edit_case');
+  assert.equal(editSituationTool.title, 'Edit Situation');
+  assert.match(
+    editSituationTool.description,
+    /Situation.+under a broader What-if/,
+  );
+  assert.match(
+    findTool(registered, 'create_project').description,
+    /cases field name for compatibility/,
+  );
+
   const listTool = findTool(registered, 'list_projects');
   const getTool = findTool(registered, 'get_project');
   const list = JSON.parse(

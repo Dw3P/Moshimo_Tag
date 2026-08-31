@@ -4800,10 +4800,18 @@ const SITE_BASE_SCHEMA = {
 
 const SITE_CASE_SCHEMA = {
   type: 'object',
+  description:
+    'One concrete Situation under a broader What-if. The API keeps the field name Case for compatibility; the page labels it Situation.',
   required: ['suggestedActions', 'title'],
   additionalProperties: false,
   properties: {
-    title: { type: 'string', minLength: 1, maxLength: 120 },
+    title: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 120,
+      description:
+        'The condition or outcome that distinguishes this Situation from the other Situations under the same What-if.',
+    },
     suggestedActions: {
       type: 'array',
       minItems: 1,
@@ -4838,6 +4846,8 @@ const SITE_CREATE_ITEM_SCHEMA = {
             minItems: PROJECT_PLAN_LIMITS.casesPerTag[0],
             maxItems: PROJECT_PLAN_LIMITS.casesPerTag[1],
             items: SITE_CASE_SCHEMA,
+            description:
+              'Concrete Situations for this What-if. The API field remains cases for compatibility.',
           },
           impact: {
             oneOf: [
@@ -4944,7 +4954,8 @@ function createGetProjectTool(
   return {
     name: 'get_project',
     title: 'Read Project',
-    description: 'Read a bounded Project, Plan, What-if, Case, or selected Final projection.',
+    description:
+      'Read a bounded Project, Plan, What-if, Situation, or selected Final projection. The API section value case and cases fields refer to Situations: concrete conditions or outcomes under a broader What-if. In saved response data, covered is shown in the page as Already covered and accept as Accept risk.',
     inputSchema: {
       type: 'object',
       required: ['section'],
@@ -4954,6 +4965,8 @@ function createGetProjectTool(
         section: {
           type: 'string',
           enum: ['project', 'plan', 'what_if', 'case', 'final'],
+          description:
+            'Use case to read one Situation. The API value remains case for compatibility with existing agents.',
         },
         entityId: { type: 'string', minLength: 1, maxLength: 160 },
       },
@@ -4971,7 +4984,7 @@ function createProjectTool(
     name: 'create_project',
     title: 'Create Project',
     description:
-      'Create a Project, optionally with one atomic ordered Plan bundle containing What-if Cases and concrete candidate actions. Candidate actions remain undecided for the person to accept, edit, or dismiss in the page UI. On an empty workspace, first call list_projects and use its currentProjectId/currentProjectVersion as this mutation context.',
+      'Create a Project, optionally with one atomic ordered Plan bundle. Each What-if is a broader possibility; each nested Case is a concrete Situation or outcome under that What-if and contains candidate actions. The API keeps the cases field name for compatibility, while the page labels these entries Situation. Candidate actions remain undecided for the person to accept, edit, or dismiss in the page UI. On an empty workspace, first call list_projects and use its currentProjectId/currentProjectVersion as this mutation context.',
     inputSchema: {
       type: 'object',
       required: ['description', 'idempotencyKey', 'projectId', 'projectVersion', 'title'],
@@ -5151,6 +5164,8 @@ function createEditWhatIfTool(
   };
   const caseSchema = {
     type: 'object',
+    description:
+      'One concrete Situation under the broader What-if. The API keeps the Case name for compatibility.',
     required: ['suggestedActions', 'title'],
     additionalProperties: false,
     properties: {
@@ -5172,13 +5187,15 @@ function createEditWhatIfTool(
       minItems: 1,
       maxItems: NORMAL_REVIEW_LIMITS.casesPerTag[1],
       items: caseSchema,
+      description:
+        'Concrete Situations for this What-if. The API field remains cases for compatibility.',
     },
   };
   return {
     name: 'edit_what_if',
     title: 'Edit What-if',
     description:
-      'Perform exactly one bounded add, update, delete, impact, or stable impact-sort operation. Added Cases contain candidate actions only and remain undecided.',
+      'Perform exactly one bounded add, update, delete, impact, or stable impact-sort operation. A What-if is the broader possibility; each nested Case is a concrete Situation or outcome under it. The API keeps the cases field name for compatibility. Added Situations contain candidate actions only and remain undecided.',
     inputSchema: {
       oneOf: [
         siteSchema('add', [
@@ -5240,9 +5257,9 @@ function createEditCaseTool(
   };
   return {
     name: 'edit_case',
-    title: 'Edit Case',
+    title: 'Edit Situation',
     description:
-      'Add, update, or delete one bounded Case and its concrete candidate actions. This tool cannot accept, dismiss, or save a human response; the person makes that decision in the page UI.',
+      'Add, update, or delete one bounded Situation and its concrete candidate actions under a broader What-if. The tool name edit_case and Case IDs remain unchanged for compatibility. This tool cannot mark Already covered, Accept risk, dismiss, or save a human response; the person makes that decision in the page UI.',
     inputSchema: {
       oneOf: [
         siteSchema('add', ['tagId', 'tagVersion', 'title', 'suggestedActions'], {
@@ -5285,7 +5302,7 @@ function createEditPlanBOptionsTool(
     name: 'edit_plan_b_options',
     title: 'Edit Plan B Options',
     description:
-      'Create or edit the unsaved Plan B option draft for any Case under any What-if. Use replace with an empty options array to create an empty draft; use add, update, or delete for individual options; use discard to remove the draft. optionNumber is one-based (Option 1 through Option 5). This tool never accepts or saves the Plan B decision—the person reviews, edits, rejects, or saves it in the page UI.',
+      'Create or edit the unsaved Plan B option draft for any Situation under any What-if. The API keeps Case IDs and caseId for compatibility. Use replace with an empty options array to create an empty draft; use add, update, or delete for individual options; use discard to remove the draft. optionNumber is one-based (Option 1 through Option 5). This tool never accepts or saves the Plan B decision—the person reviews, edits, rejects, or saves it in the page UI.',
     inputSchema: {
       oneOf: [
         siteSchema('replace', ['caseId', 'caseVersion', 'options'], {
@@ -5332,7 +5349,7 @@ function createGetExportProjectionTool(
     name: 'get_export_projection',
     title: 'Read Export Projection',
     description:
-      'Read a bounded projection of the last saved Project as structured JSON. Omit projection, or use human_summary, for ordinary human-readable CSV, spreadsheet, document, or summary requests: it returns the Project title once, omits internal IDs/version, and supplies table-ready rows whose repeated Plan and What-if cells are intentionally blank. Preserve those blanks and do not repeat the Project title in every row. Use timeline, case_matrix, or runbook only when the user explicitly requests machine-readable records, a detailed Case matrix, or a runbook. Candidate actions and saved responses remain separate, ordered actions stay in one cell with line breaks, and resolved/dismissed history is excluded.',
+      'Read a bounded projection of the last saved Project as structured JSON. Omit projection, or use human_summary, for ordinary human-readable CSV, spreadsheet, document, or summary requests: it returns the Project title once, omits internal IDs/version, and supplies table-ready rows whose repeated Plan and What-if cells are intentionally blank. Preserve those blanks and do not repeat the Project title in every row. Use timeline, case_matrix, or runbook only when the user explicitly requests machine-readable records, a detailed Situation matrix (the API projection name remains case_matrix), or a runbook. Candidate actions and saved responses remain separate, ordered actions stay in one cell with line breaks, and resolved/dismissed history is excluded.',
     inputSchema: EXPORT_PROJECTION_SCHEMA,
     annotations: { readOnlyHint: true, untrustedContentHint: true },
     execute: async (input) => siteReadExportProjection(input, dependencies),

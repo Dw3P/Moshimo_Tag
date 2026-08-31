@@ -67,7 +67,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
       payload: {
         caseId: 'case-traffic-light',
         disposition: 'accept',
-        actions: ['Take the usual route after checking the latest traffic.'],
+        actions: [],
         when: '',
         status: null,
       },
@@ -77,9 +77,42 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
   const acceptedCase = getSnapshot().project.timeline[0].tags[0].cases[0];
   assert.equal(acceptedCase.response?.disposition, 'accept');
   assert.deepEqual(acceptedCase.suggestedActions, originalSuggestions);
-  assert.notStrictEqual(
-    acceptedCase.response?.actions,
-    acceptedCase.suggestedActions,
+  assert.deepEqual(acceptedCase.response?.actions, []);
+
+  assert.equal(
+    dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: 'case-traffic-light',
+        disposition: 'accept',
+        actions: ['Continue as an experiment and accept the result.'],
+        when: '',
+        status: null,
+      },
+    }).ok,
+    true,
+  );
+  assert.deepEqual(
+    getSnapshot().project.timeline[0].tags[0].cases[0].response?.actions,
+    ['Continue as an experiment and accept the result.'],
+  );
+
+  assert.equal(
+    dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: 'case-traffic-light',
+        disposition: 'covered',
+        actions: ['The main Plan already includes a backup route.'],
+        when: '',
+        status: null,
+      },
+    }).ok,
+    true,
+  );
+  assert.deepEqual(
+    getSnapshot().project.timeline[0].tags[0].cases[0].response?.actions,
+    ['The main Plan already includes a backup route.'],
   );
 
   assert.equal(
@@ -143,7 +176,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
     { disposition: 'plan_b', actions: [] },
     { disposition: 'plan_b', actions: ['1', '2', '3', '4', '5', '6'] },
     { disposition: 'accept', actions: ['1', '2'] },
-    { disposition: 'covered', actions: ['not allowed'] },
+    { disposition: 'covered', actions: ['one memo', 'a second memo'] },
   ] as const;
   for (const invalid of invalidPayloads) {
     const beforeInvalid = getSnapshot();
