@@ -767,7 +767,7 @@ function EmptyWorkspace({
                   <Image
                     alt="A real Final view where one Plan branches to selected Actions and Plan B"
                     height={1050}
-                    src="/tutorial/steps/04-final-view.jpg"
+                    src="/tutorial/steps/04-final-plan-review.jpg"
                     width={1280}
                   />
                 </figure>
