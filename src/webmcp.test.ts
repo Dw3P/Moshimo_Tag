@@ -818,6 +818,15 @@ test('Direct Site tools discover eleven static tools and expose bounded section 
     findTool(registered, 'create_project').description,
     /cases field name for compatibility/,
   );
+  assert.match(
+    findTool(registered, 'create_project').description,
+    /only the person may decide/i,
+  );
+  assert.match(editSituationTool.description, /do not operate page response choices/i);
+  assert.match(
+    findTool(registered, 'edit_plan_b_options').description,
+    /leave the Situation undecided and stop/i,
+  );
 
   const listTool = findTool(registered, 'list_projects');
   const getTool = findTool(registered, 'get_project');
@@ -970,11 +979,16 @@ test('Direct Site mutation tools map every agent-owned operation to the shared c
   const storage = new MemoryStorage();
   assert.equal(initializePersistence(() => storage).kind, 'ready');
   const commands: unknown[] = [];
+  const committedOperations: string[] = [];
   const dispatchSpy = (raw: unknown): CommandResult => {
     commands.push(raw);
     return { ok: true, code: 'OK', affectedIds: [], version: getSnapshot().project.version };
   };
-  const tools = createSiteTools({ dispatch: dispatchSpy, getSnapshot });
+  const tools = createSiteTools({
+    dispatch: dispatchSpy,
+    getSnapshot,
+    onMutationCommitted: ({ operation }) => committedOperations.push(operation),
+  });
   const create = findTool(tools, 'create_project');
   const open = findTool(tools, 'open_project');
   const update = findTool(tools, 'update_project');
@@ -982,6 +996,7 @@ test('Direct Site mutation tools map every agent-owned operation to the shared c
   const plan = findTool(tools, 'edit_plan');
   const whatIf = findTool(tools, 'edit_what_if');
   const caseTool = findTool(tools, 'edit_case');
+  const planB = findTool(tools, 'edit_plan_b_options');
   const project = getSnapshot().project;
   const base = {
     projectId: project.id,
@@ -1186,6 +1201,17 @@ test('Direct Site mutation tools map every agent-owned operation to the shared c
     },
     signal(),
   );
+  await planB.execute(
+    {
+      ...base,
+      idempotencyKey: 'site-plan-b-replace',
+      operation: 'replace',
+      caseId: 'case-traffic-light',
+      caseVersion: 1,
+      options: ['Keep the usual route and leave as planned.'],
+    },
+    signal(),
+  );
   assert.deepEqual(
     commands.map((command) => (command as { type: string }).type),
     [
@@ -1206,8 +1232,29 @@ test('Direct Site mutation tools map every agent-owned operation to the shared c
       'case.create',
       'case.update',
       'case.delete',
+      'case.planBOptions.set',
     ],
   );
+  assert.deepEqual(committedOperations, [
+    'create_project',
+    'create_project',
+    'open_project',
+    'update_project',
+    'set_project_view',
+    'edit_plan',
+    'edit_plan',
+    'edit_plan',
+    'edit_plan',
+    'edit_what_if',
+    'edit_what_if',
+    'edit_what_if',
+    'edit_what_if',
+    'edit_what_if',
+    'edit_case',
+    'edit_case',
+    'edit_case',
+    'edit_plan_b_options',
+  ]);
   assert.deepEqual(
     (commands[1] as { payload: { items: unknown[] } }).payload.items,
     planBundle,
@@ -1229,7 +1276,27 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
     kind: 'ready',
     source: 'empty',
   });
-  const tools = createSiteTools({ dispatch, getSnapshot });
+  const committedSnapshots: Array<{
+    operation: string;
+    committedVersion: number;
+    visibleVersion: number;
+    planBOptionsDraft: string[] | null;
+  }> = [];
+  const tools = createSiteTools({
+    dispatch,
+    getSnapshot,
+    onMutationCommitted: ({ operation, version }) => {
+      const snapshot = getSnapshot();
+      committedSnapshots.push({
+        operation,
+        committedVersion: version,
+        visibleVersion: snapshot.project.version,
+        planBOptionsDraft:
+          snapshot.project.timeline[0]?.tags[0]?.cases[0]?.planBOptionsDraft ??
+          null,
+      });
+    },
+  });
   const list = JSON.parse(
     await findTool(tools, 'list_projects').execute(
       {},
@@ -1306,10 +1373,24 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
     ),
   );
   assert.equal(replaceDraft.ok, true);
+  assert.deepEqual(replaceDraft.authority, {
+    scope: 'candidate_edit_only',
+    caseResponse: 'unchanged',
+    nextRequiredActor: 'human',
+  });
   assert.deepEqual(currentCase().planBOptionsDraft, [
     'Tent the loaf with foil.',
     'Lower the oven by 10°C and continue baking.',
   ]);
+  assert.deepEqual(committedSnapshots.at(-1), {
+    operation: 'edit_plan_b_options',
+    committedVersion: getSnapshot().project.version,
+    visibleVersion: getSnapshot().project.version,
+    planBOptionsDraft: [
+      'Tent the loaf with foil.',
+      'Lower the oven by 10°C and continue baking.',
+    ],
+  });
   assert.equal(currentCase().response, null);
 
   const caseProjection = JSON.parse(
@@ -1495,11 +1576,16 @@ test('Direct Site mutations enforce strict input, current versions, cancellation
   assert.equal(initializePersistence(() => storage).kind, 'ready');
   const project = getSnapshot().project;
   const calls: unknown[] = [];
+  const committedOperations: string[] = [];
   const dispatchSpy = (raw: unknown): CommandResult => {
     calls.push(raw);
     return { ok: true, code: 'OK', affectedIds: ['item-leave-home'], version: project.version + 1 };
   };
-  const tools = createSiteTools({ dispatch: dispatchSpy, getSnapshot });
+  const tools = createSiteTools({
+    dispatch: dispatchSpy,
+    getSnapshot,
+    onMutationCommitted: ({ operation }) => committedOperations.push(operation),
+  });
   const plan = findTool(tools, 'edit_plan');
   const base = {
     projectId: project.id,
@@ -1552,6 +1638,7 @@ test('Direct Site mutations enforce strict input, current versions, cancellation
   });
   assert.equal(replayText, firstText);
   assert.equal(calls.length, 1);
+  assert.deepEqual(committedOperations, ['edit_plan']);
   const duplicate = JSON.parse(
     await plan.execute(
       { ...firstInput, title: 'A different title' },
@@ -1563,6 +1650,7 @@ test('Direct Site mutations enforce strict input, current versions, cancellation
   assert.equal(calls.length, 1);
 
   const failureCalls: unknown[] = [];
+  const failureCommits: string[] = [];
   const saveFailure = createSiteTools({
     dispatch: (raw) => {
       failureCalls.push(raw);
@@ -1574,6 +1662,7 @@ test('Direct Site mutations enforce strict input, current versions, cancellation
       };
     },
     getSnapshot,
+    onMutationCommitted: ({ operation }) => failureCommits.push(operation),
   });
   const failed = JSON.parse(
     await findTool(saveFailure, 'edit_plan').execute(
@@ -1584,6 +1673,28 @@ test('Direct Site mutations enforce strict input, current versions, cancellation
   assert.equal(failed.ok, false);
   assert.equal(failed.code, 'SAVE_FAILED');
   assert.equal(failureCalls.length, 1);
+  assert.deepEqual(failureCommits, []);
+
+  const noChangeCommits: string[] = [];
+  const noChangeTools = createSiteTools({
+    dispatch: () => ({
+      ok: true,
+      code: 'NO_CHANGES',
+      affectedIds: [],
+      version: project.version,
+    }),
+    getSnapshot,
+    onMutationCommitted: ({ operation }) => noChangeCommits.push(operation),
+  });
+  const unchanged = JSON.parse(
+    await findTool(noChangeTools, 'edit_plan').execute(
+      { ...firstInput, idempotencyKey: 'strict-no-changes' },
+      { signal: new AbortController().signal },
+    ),
+  );
+  assert.equal(unchanged.ok, true);
+  assert.equal(unchanged.code, 'NO_CHANGES');
+  assert.deepEqual(noChangeCommits, []);
 });
 
 test('get_export_projection defaults to a human-readable grouped table', async () => {

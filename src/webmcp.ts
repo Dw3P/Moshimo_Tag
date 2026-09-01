@@ -57,6 +57,13 @@ interface ReviewToolDependencies {
   dispatch: (raw: unknown) => CommandResult;
   getSnapshot: () => AppState;
   onActivity?: (activity: WebMcpActivity) => void;
+  onMutationCommitted?: (commit: WebMcpMutationCommit) => void;
+}
+
+interface WebMcpMutationCommit {
+  operation: string;
+  affectedIds: string[];
+  version: number;
 }
 
 interface ModelContextHost {
@@ -215,6 +222,38 @@ function notifyActivity(
   } catch {
     // Activity feedback is UI-only and must not change the tool result.
   }
+}
+
+function notifyMutationCommitted(
+  dependencies: ReviewToolDependencies,
+  operation: string,
+  result: Extract<CommandResult, { ok: true }>,
+): void {
+  if (result.code !== 'OK') return;
+  try {
+    dependencies.onMutationCommitted?.({
+      operation,
+      affectedIds: [...result.affectedIds],
+      version: result.version,
+    });
+  } catch {
+    // Rendering feedback is UI-only and must not change a committed tool result.
+  }
+}
+
+function siteMutationResultForAgent(
+  operation: string,
+  result: CommandResult,
+): CommandResult | Record<string, unknown> {
+  if (operation !== 'edit_plan_b_options' || !result.ok) return result;
+  return {
+    ...result,
+    authority: {
+      scope: 'candidate_edit_only',
+      caseResponse: 'unchanged',
+      nextRequiredActor: 'human',
+    },
+  };
 }
 
 function isSuccessfulResult(result: string): boolean {
@@ -4774,7 +4813,7 @@ function executeSiteMutation<T extends SiteMutationBase>(
   }
   let serialized: string;
   try {
-    serialized = JSON.stringify(result);
+    serialized = JSON.stringify(siteMutationResultForAgent(operation, result));
   } catch {
     return errorResult('UNAVAILABLE', `${operation}: the command result could not be serialized.`, true);
   }
@@ -4783,6 +4822,7 @@ function executeSiteMutation<T extends SiteMutationBase>(
       fingerprint: inputFingerprint,
       result: serialized,
     });
+    notifyMutationCommitted(dependencies, operation, result);
   }
   return serialized;
 }
@@ -4984,7 +5024,7 @@ function createProjectTool(
     name: 'create_project',
     title: 'Create Project',
     description:
-      'Create a Project, optionally with one atomic ordered Plan bundle. Each What-if is a broader possibility; each nested Case is a concrete Situation or outcome under that What-if and contains candidate actions. The API keeps the cases field name for compatibility, while the page labels these entries Situation. Candidate actions remain undecided for the person to accept, edit, or dismiss in the page UI. On an empty workspace, first call list_projects and use its currentProjectId/currentProjectVersion as this mutation context.',
+      'Create a Project, optionally with one atomic ordered Plan bundle. Each What-if is a broader possibility; each nested Case is a concrete Situation or outcome under that What-if and contains candidate actions. The API keeps the cases field name for compatibility, while the page labels these entries Situation. Candidate actions remain undecided for the person to accept, edit, or dismiss in the page UI. After this tool succeeds, do not operate page response choices or Save response; only the person may decide. On an empty workspace, first call list_projects and use its currentProjectId/currentProjectVersion as this mutation context.',
     inputSchema: {
       type: 'object',
       required: ['description', 'idempotencyKey', 'projectId', 'projectVersion', 'title'],
@@ -5259,7 +5299,7 @@ function createEditCaseTool(
     name: 'edit_case',
     title: 'Edit Situation',
     description:
-      'Add, update, or delete one bounded Situation and its concrete candidate actions under a broader What-if. The tool name edit_case and Case IDs remain unchanged for compatibility. This tool cannot mark Already covered, Accept risk, dismiss, or save a human response; the person makes that decision in the page UI.',
+      'Add, update, or delete one bounded Situation and its concrete candidate actions under a broader What-if. The tool name edit_case and Case IDs remain unchanged for compatibility. This tool cannot mark Already covered, Accept risk, dismiss, or save a human response. After this tool succeeds, do not operate page response choices or Save response; only the person may decide.',
     inputSchema: {
       oneOf: [
         siteSchema('add', ['tagId', 'tagVersion', 'title', 'suggestedActions'], {
@@ -5302,7 +5342,7 @@ function createEditPlanBOptionsTool(
     name: 'edit_plan_b_options',
     title: 'Edit Plan B Options',
     description:
-      'Create or edit the unsaved Plan B option draft for any Situation under any What-if. The API keeps Case IDs and caseId for compatibility. Use replace with an empty options array to create an empty draft; use add, update, or delete for individual options; use discard to remove the draft. optionNumber is one-based (Option 1 through Option 5). This tool never accepts or saves the Plan B decision—the person reviews, edits, rejects, or saves it in the page UI.',
+      'Create or edit the unsaved Plan B option draft for any Situation under any What-if. The API keeps Case IDs and caseId for compatibility. Use replace with an empty options array to create an empty draft; use add, update, or delete for individual options; use discard to remove the draft. optionNumber is one-based (Option 1 through Option 5). This tool never accepts or saves the Plan B decision. After it succeeds, leave the Situation undecided and stop; do not operate its page response choices or Save response. Only the person may review and save a decision.',
     inputSchema: {
       oneOf: [
         siteSchema('replace', ['caseId', 'caseVersion', 'options'], {

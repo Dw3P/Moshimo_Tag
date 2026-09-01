@@ -1158,6 +1158,7 @@ function CaseCard({
             </strong>
           </div>
           <button
+            aria-label={`Review agent-prepared Plan B draft for ${caseItem.title}. This does not save a response.`}
             type="button"
             onClick={() => beginDisposition('plan_b', true)}
           >
@@ -1231,12 +1232,12 @@ function CaseCard({
           className="case-choice-group"
           ref={choiceGroupRef}
           role="group"
-          aria-label={`Response choices for ${caseItem.title}`}
+          aria-label={`Human decision only: response choices for ${caseItem.title}. Agents must leave this Situation undecided.`}
         >
           {(Object.keys(dispositionLabels) as CaseDisposition[]).map(
             (disposition) => (
               <button
-                aria-label={`${dispositionLabels[disposition]} for ${caseItem.title}. ${dispositionDescriptions[disposition]}`}
+                aria-label={`Human decision only: ${dispositionLabels[disposition]} for ${caseItem.title}. ${dispositionDescriptions[disposition]}`}
                 aria-pressed={draftDisposition === disposition}
                 className={
                   draftDisposition === disposition ? 'is-selected' : undefined
@@ -1259,7 +1260,7 @@ function CaseCard({
 
       {showActionEditor ? (
         <form
-          aria-label={`Response editor for ${caseItem.title}`}
+          aria-label={`Human decision editor for ${caseItem.title}. Agents must not submit this response.`}
           className="case-response-editor"
           onSubmit={saveResponse}
         >
@@ -1443,7 +1444,11 @@ function CaseCard({
             >
               Cancel
             </button>
-            <button className="primary-action" type="submit">
+            <button
+              aria-label={`Human decision only: Save response for ${caseItem.title}`}
+              className="primary-action"
+              type="submit"
+            >
               Save response
             </button>
           </div>
@@ -2398,6 +2403,7 @@ export default function Home() {
       phase: 'waiting',
       requestKey: null,
     });
+  const [, refreshAfterWebMcpMutation] = useState(0);
   const projectIdRef = useRef(appState.project.id);
   const showAddAfterProjectSwitchRef = useRef(false);
 
@@ -2464,7 +2470,15 @@ export default function Home() {
     }
     return registerSiteTools(
       { modelContext },
-      { dispatch, getSnapshot },
+      {
+        dispatch,
+        getSnapshot,
+        onMutationCommitted: () => {
+          // Explicitly bridge the WebMCP host callback into React after the
+          // shared command has persisted and published state.
+          refreshAfterWebMcpMutation((revision) => revision + 1);
+        },
+      },
       setWebMcpStatus,
     );
   }, [persistenceReady]);
