@@ -76,6 +76,7 @@ test('normal review applies scoped Tags, Cases, actions, and Gap proposals witho
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-light',
+      planBId: null,
       disposition: 'accept',
       actions: ['Take the usual route and leave as planned.'],
       when: '',

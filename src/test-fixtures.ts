@@ -5,7 +5,7 @@ import {
 } from './app-state.ts';
 
 export const sampleTestState: AppState = {
-  schemaVersion: 6,
+  schemaVersion: 7,
   project: {
     id: 'project-test-trip',
     version: 1,
@@ -46,7 +46,7 @@ export const sampleTestState: AppState = {
                   'Take the usual route and leave as planned.',
                 ],
                 suggestedActionSource: 'agent',
-                planBOptionsDraft: null,
+                planBOptions: [],
                 response: null,
               },
               {
@@ -58,7 +58,7 @@ export const sampleTestState: AppState = {
                   'Leave earlier or ask the driver to use the alternate route.',
                 ],
                 suggestedActionSource: 'agent',
-                planBOptionsDraft: null,
+                planBOptions: [],
                 response: null,
               },
               {
@@ -70,7 +70,7 @@ export const sampleTestState: AppState = {
                   'Switch to the airport rail route from the nearest station.',
                 ],
                 suggestedActionSource: 'agent',
-                planBOptionsDraft: null,
+                planBOptions: [],
                 response: null,
               },
             ],
@@ -98,7 +98,7 @@ export const sampleTestState: AppState = {
                   'Call the driver and set a five-minute decision point.',
                 ],
                 suggestedActionSource: 'agent',
-                planBOptionsDraft: null,
+                planBOptions: [],
                 response: null,
               },
               {
@@ -108,7 +108,7 @@ export const sampleTestState: AppState = {
                 title: 'Driver cannot be reached',
                 suggestedActions: ['Request another car or walk to the station.'],
                 suggestedActionSource: 'agent',
-                planBOptionsDraft: null,
+                planBOptions: [],
                 response: null,
               },
             ],
@@ -144,7 +144,7 @@ export const sampleTestState: AppState = {
                 title: 'Queue exceeds 30 min',
                 suggestedActions: ['Ask airport staff for the fastest valid lane.'],
                 suggestedActionSource: 'agent',
-                planBOptionsDraft: null,
+                planBOptions: [],
                 response: null,
               },
             ],
@@ -170,7 +170,7 @@ export const sampleTestState: AppState = {
                 title: 'A digital copy is available',
                 suggestedActions: ['Ask the airline whether the copy is accepted.'],
                 suggestedActionSource: 'agent',
-                planBOptionsDraft: null,
+                planBOptions: [],
                 response: null,
               },
             ],
@@ -206,7 +206,7 @@ export const sampleTestState: AppState = {
                 title: 'Same-day rebooking is available',
                 suggestedActions: ['Rebook before arranging the onward journey.'],
                 suggestedActionSource: 'agent',
-                planBOptionsDraft: null,
+                planBOptions: [],
                 response: null,
               },
             ],

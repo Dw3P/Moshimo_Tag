@@ -465,6 +465,7 @@ test('WebMCP reads and atomically applies an explicit stale Tag recheck without 
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-light',
+      planBId: null,
       disposition: 'accept',
       actions: ['Take the usual route and leave as planned.'],
       when: '',
@@ -822,10 +823,10 @@ test('Direct Site tools discover eleven static tools and expose bounded section 
     findTool(registered, 'create_project').description,
     /only the person may decide/i,
   );
-  assert.match(editSituationTool.description, /do not operate page response choices/i);
+  assert.match(editSituationTool.description, /Project owner to carry out alone/i);
   assert.match(
     findTool(registered, 'edit_plan_b_options').description,
-    /leave the Situation undecided and stop/i,
+    /appear immediately beneath the main countermeasure/i,
   );
 
   const listTool = findTool(registered, 'list_projects');
@@ -861,7 +862,7 @@ test('Direct Site tools discover eleven static tools and expose bounded section 
   assert.equal('needsRecheck' in plan.items[0].tags[0], true);
   assert.equal('impact' in plan.items[0].tags[0], true);
   assert.equal('suggestedActions' in plan.items[0].tags[0].cases[0], true);
-  assert.equal('planBOptionsDraft' in plan.items[0].tags[0].cases[0], true);
+  assert.equal('planBOptions' in plan.items[0].tags[0].cases[0], true);
   assert.equal('response' in plan.items[0].tags[0].cases[0], true);
 
   const whatIf = JSON.parse(
@@ -909,6 +910,7 @@ test('Direct Site tools discover eleven static tools and expose bounded section 
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-light',
+      planBId: null,
       disposition: 'accept',
       actions: ['Take the usual route.'],
       when: '',
@@ -1270,7 +1272,7 @@ test('Direct Site mutation tools map every agent-owned operation to the shared c
   );
 });
 
-test('Direct WebMCP creates and edits an empty or populated Plan B draft without deciding for the person', async () => {
+test('Direct WebMCP shows real Plan B countermeasures immediately without deciding for the person', async () => {
   const storage = new MemoryStorage();
   assert.deepEqual(initializePersistence(() => storage, 'empty'), {
     kind: 'ready',
@@ -1280,7 +1282,7 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
     operation: string;
     committedVersion: number;
     visibleVersion: number;
-    planBOptionsDraft: string[] | null;
+    planBOptions: string[];
   }> = [];
   const tools = createSiteTools({
     dispatch,
@@ -1291,9 +1293,10 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
         operation,
         committedVersion: version,
         visibleVersion: snapshot.project.version,
-        planBOptionsDraft:
-          snapshot.project.timeline[0]?.tags[0]?.cases[0]?.planBOptionsDraft ??
-          null,
+        planBOptions:
+          snapshot.project.timeline[0]?.tags[0]?.cases[0]?.planBOptions.map(
+            (option) => option.action,
+          ) ?? [],
       });
     },
   });
@@ -1302,6 +1305,11 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
       {},
       { signal: new AbortController().signal },
     ),
+  );
+  assert.equal(list.planningPolicy.defaultActor, 'project_owner');
+  assert.match(
+    list.planningPolicy.actionWriting,
+    /Do not invent co-owners/u,
   );
   const created = JSON.parse(
     await findTool(tools, 'create_project').execute(
@@ -1345,7 +1353,7 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
     'Tent the loaf with foil.',
     'Lower the oven by 10°C and continue baking.',
   ]);
-  assert.equal(caseItem.planBOptionsDraft, null);
+  assert.deepEqual(caseItem.planBOptions, []);
   assert.equal(caseItem.response, null);
 
   const currentCase = () =>
@@ -1355,10 +1363,10 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
     JSON.stringify(editPlanB.inputSchema).includes('disposition'),
     false,
   );
-  const replaceDraft = JSON.parse(
+  const replacePlanBs = JSON.parse(
     await editPlanB.execute(
       {
-        idempotencyKey: 'plan-b-draft-replace',
+        idempotencyKey: 'plan-b-replace',
         projectId: getSnapshot().project.id,
         projectVersion: getSnapshot().project.version,
         operation: 'replace',
@@ -1372,21 +1380,26 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
       { signal: new AbortController().signal },
     ),
   );
-  assert.equal(replaceDraft.ok, true);
-  assert.deepEqual(replaceDraft.authority, {
-    scope: 'candidate_edit_only',
-    caseResponse: 'unchanged',
+  assert.equal(replacePlanBs.ok, true);
+  assert.deepEqual(replacePlanBs.authority, {
+    scope: 'countermeasure_content_only',
+    display: 'updated_immediately',
+    decisions: 'unchanged',
     nextRequiredActor: 'human',
   });
-  assert.deepEqual(currentCase().planBOptionsDraft, [
-    'Tent the loaf with foil.',
-    'Lower the oven by 10°C and continue baking.',
-  ]);
+  assert.deepEqual(
+    currentCase().planBOptions.map((option) => option.action),
+    ['Tent the loaf with foil.', 'Lower the oven by 10°C and continue baking.'],
+  );
+  assert.equal(
+    currentCase().planBOptions.every((option) => option.response === null),
+    true,
+  );
   assert.deepEqual(committedSnapshots.at(-1), {
     operation: 'edit_plan_b_options',
     committedVersion: getSnapshot().project.version,
     visibleVersion: getSnapshot().project.version,
-    planBOptionsDraft: [
+    planBOptions: [
       'Tent the loaf with foil.',
       'Lower the oven by 10°C and continue baking.',
     ],
@@ -1400,15 +1413,19 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
     ),
   );
   assert.deepEqual(
-    caseProjection.case.planBOptionsDraft,
-    currentCase().planBOptionsDraft,
+    caseProjection.case.planBOptions.map(
+      (option: { action: string }) => option.action,
+    ),
+    currentCase().planBOptions.map((option) => option.action),
   );
+  assert.equal(caseProjection.case.planBOptions[0].response, null);
+  assert.equal(caseProjection.project.planningPolicy.defaultActor, 'project_owner');
   assert.equal(caseProjection.case.response, null);
 
-  const updatedDraft = JSON.parse(
+  const updatedPlanB = JSON.parse(
     await editPlanB.execute(
       {
-        idempotencyKey: 'plan-b-draft-update',
+        idempotencyKey: 'plan-b-update',
         projectId: getSnapshot().project.id,
         projectVersion: getSnapshot().project.version,
         operation: 'update',
@@ -1420,16 +1437,16 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
       { signal: new AbortController().signal },
     ),
   );
-  assert.equal(updatedDraft.ok, true);
-  assert.deepEqual(currentCase().planBOptionsDraft, [
-    'Tent the loaf with foil.',
-    'Reduce the oven by 15°C and finish baking.',
-  ]);
+  assert.equal(updatedPlanB.ok, true);
+  assert.deepEqual(
+    currentCase().planBOptions.map((option) => option.action),
+    ['Tent the loaf with foil.', 'Reduce the oven by 15°C and finish baking.'],
+  );
 
-  const addedDraft = JSON.parse(
+  const addedPlanB = JSON.parse(
     await editPlanB.execute(
       {
-        idempotencyKey: 'plan-b-draft-add',
+        idempotencyKey: 'plan-b-add',
         projectId: getSnapshot().project.id,
         projectVersion: getSnapshot().project.version,
         operation: 'add',
@@ -1440,13 +1457,13 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
       { signal: new AbortController().signal },
     ),
   );
-  assert.equal(addedDraft.ok, true);
-  assert.equal(currentCase().planBOptionsDraft?.length, 3);
+  assert.equal(addedPlanB.ok, true);
+  assert.equal(currentCase().planBOptions.length, 3);
 
-  const deletedDraftOption = JSON.parse(
+  const deletedPlanB = JSON.parse(
     await editPlanB.execute(
       {
-        idempotencyKey: 'plan-b-draft-delete',
+        idempotencyKey: 'plan-b-delete',
         projectId: getSnapshot().project.id,
         projectVersion: getSnapshot().project.version,
         operation: 'delete',
@@ -1457,16 +1474,16 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
       { signal: new AbortController().signal },
     ),
   );
-  assert.equal(deletedDraftOption.ok, true);
-  assert.deepEqual(currentCase().planBOptionsDraft, [
-    'Reduce the oven by 15°C and finish baking.',
-    'Move the loaf to a lower rack.',
-  ]);
+  assert.equal(deletedPlanB.ok, true);
+  assert.deepEqual(
+    currentCase().planBOptions.map((option) => option.action),
+    ['Reduce the oven by 15°C and finish baking.', 'Move the loaf to a lower rack.'],
+  );
 
-  const discardedDraft = JSON.parse(
+  const discardedPlanBs = JSON.parse(
     await editPlanB.execute(
       {
-        idempotencyKey: 'plan-b-draft-discard',
+        idempotencyKey: 'plan-b-discard',
         projectId: getSnapshot().project.id,
         projectVersion: getSnapshot().project.version,
         operation: 'discard',
@@ -1476,13 +1493,13 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
       { signal: new AbortController().signal },
     ),
   );
-  assert.equal(discardedDraft.ok, true);
-  assert.equal(currentCase().planBOptionsDraft, null);
+  assert.equal(discardedPlanBs.ok, true);
+  assert.deepEqual(currentCase().planBOptions, []);
 
-  const emptyDraft = JSON.parse(
+  const emptyPlanBs = JSON.parse(
     await editPlanB.execute(
       {
-        idempotencyKey: 'plan-b-draft-empty',
+        idempotencyKey: 'plan-b-empty',
         projectId: getSnapshot().project.id,
         projectVersion: getSnapshot().project.version,
         operation: 'replace',
@@ -1493,13 +1510,13 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
       { signal: new AbortController().signal },
     ),
   );
-  assert.equal(emptyDraft.ok, true);
-  assert.deepEqual(currentCase().planBOptionsDraft, []);
+  assert.equal(emptyPlanBs.ok, true);
+  assert.deepEqual(currentCase().planBOptions, []);
 
-  const finalDraft = JSON.parse(
+  const finalPlanB = JSON.parse(
     await editPlanB.execute(
       {
-        idempotencyKey: 'plan-b-draft-from-empty',
+        idempotencyKey: 'plan-b-from-empty',
         projectId: getSnapshot().project.id,
         projectVersion: getSnapshot().project.version,
         operation: 'add',
@@ -1510,11 +1527,13 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
       { signal: new AbortController().signal },
     ),
   );
-  assert.equal(finalDraft.ok, true);
-  assert.deepEqual(currentCase().planBOptionsDraft, [
-    'Tent the loaf and finish on a lower rack.',
-  ]);
+  assert.equal(finalPlanB.ok, true);
+  assert.deepEqual(
+    currentCase().planBOptions.map((option) => option.action),
+    ['Tent the loaf and finish on a lower rack.'],
+  );
   assert.equal(currentCase().response, null);
+  assert.equal(currentCase().planBOptions[0].response, null);
 
   const editCase = findTool(tools, 'edit_case');
   assert.equal(JSON.stringify(editCase.inputSchema).includes('save_response'), false);
@@ -1530,7 +1549,7 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
         caseId: caseItem.id,
         caseVersion: caseItem.version,
         response: {
-          disposition: 'plan_b',
+          disposition: 'prepare',
           actions: ['Tent the loaf with foil.'],
           when: '',
           status: null,
@@ -1543,25 +1562,48 @@ test('Direct WebMCP creates and edits an empty or populated Plan B draft without
   assert.equal(rejectedDecision.code, 'INVALID_INPUT');
   assert.strictEqual(getSnapshot(), beforeRejectedDecision);
 
+  const planBId = currentCase().planBOptions[0].id;
   const humanDecision = dispatch({
     type: 'case.response.save',
     payload: {
       caseId: caseItem.id,
-      disposition: 'plan_b',
-      actions: [...(currentCase().planBOptionsDraft ?? [])],
+      planBId,
+      disposition: 'prepare',
+      actions: ['Put foil and an oven mitt beside the oven.'],
       when: '',
-      status: null,
+      status: 'pending',
     },
   });
   assert.equal(humanDecision.ok, true);
   assert.deepEqual(
-    getSnapshot().project.timeline[0].tags[0].cases[0].response?.actions,
-    ['Tent the loaf and finish on a lower rack.'],
+    currentCase().planBOptions[0].response,
+    {
+      disposition: 'prepare',
+      actions: ['Put foil and an oven mitt beside the oven.'],
+      when: '',
+      status: 'pending',
+    },
   );
-  assert.equal(
-    getSnapshot().project.timeline[0].tags[0].cases[0].planBOptionsDraft,
-    null,
+  assert.equal(currentCase().response, null);
+
+  const agentRevision = JSON.parse(
+    await editPlanB.execute(
+      {
+        idempotencyKey: 'agent-revises-decided-plan-b',
+        projectId: getSnapshot().project.id,
+        projectVersion: getSnapshot().project.version,
+        operation: 'update',
+        caseId: currentCase().id,
+        caseVersion: currentCase().version,
+        optionNumber: 1,
+        option: 'Tent the loaf and reduce the oven by 10°C.',
+      },
+      { signal: new AbortController().signal },
+    ),
   );
+  assert.equal(agentRevision.ok, true);
+  assert.equal(currentCase().planBOptions[0].response, null);
+  assert.equal(currentCase().response, null);
 });
 
 type SiteImpactLike = {
@@ -1725,6 +1767,7 @@ test('get_export_projection defaults to a human-readable grouped table', async (
       'plan_details',
       'what_if',
       'case',
+      'countermeasure',
       'selection',
       'decision',
       'candidate_actions',
@@ -1738,6 +1781,7 @@ test('get_export_projection defaults to a human-readable grouped table', async (
   assert.equal(result.rows[0].plan, 'Leave home');
   assert.equal(result.rows[0].what_if, 'What if traffic is much worse than expected?');
   assert.equal(result.rows[0].case, 'Under 15 min');
+  assert.equal(result.rows[0].countermeasure, 'Main action');
   assert.equal(result.rows[0].candidate_actions, '1. Take the usual route and leave as planned.');
   assert.equal(result.rows[1].plan, '');
   assert.equal(result.rows[1].what_if, '');
@@ -1785,6 +1829,7 @@ test('get_export_projection keeps saved Case scope, one-Case cardinality, and ac
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-light',
+      planBId: null,
       disposition: 'accept',
       actions: ['Human response: keep the usual route.'],
       when: '',
@@ -1792,14 +1837,25 @@ test('get_export_projection keeps saved Case scope, one-Case cardinality, and ac
     },
   });
   assert.equal(accepted.ok, true);
+  const addedPlanB = dispatch({
+    type: 'case.planB.add',
+    payload: {
+      caseId: 'case-traffic-heavy',
+      action: 'Ask the airline to hold a later flight while changing routes.',
+    },
+  });
+  assert.equal(addedPlanB.ok, true);
+  const planBId =
+    getSnapshot().project.timeline[0].tags[0].cases[2].planBOptions[0].id;
   const planned = dispatch({
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-heavy',
-      disposition: 'plan_b',
-      actions: ['Response option one.', 'Response option two.'],
+      planBId,
+      disposition: 'prepare',
+      actions: ['Check the later-flight inventory before leaving home.'],
       when: '',
-      status: null,
+      status: 'pending',
     },
   });
   assert.equal(planned.ok, true);
@@ -1807,6 +1863,7 @@ test('get_export_projection keeps saved Case scope, one-Case cardinality, and ac
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-medium',
+      planBId: null,
       disposition: 'dismiss',
       actions: [],
       when: '',
@@ -1834,9 +1891,14 @@ test('get_export_projection keeps saved Case scope, one-Case cardinality, and ac
   assert.equal(selected.records[0].entry_scope, 'selected');
   assert.equal(selected.records[0].decision, 'accept');
   assert.deepEqual(selected.records[1].response_actions, [
-    'Response option one.',
-    'Response option two.',
+    'Check the later-flight inventory before leaving home.',
   ]);
+  assert.deepEqual(
+    selected.records.map(
+      (record: Record<string, unknown>) => record.countermeasure,
+    ),
+    ['Main action', 'Plan B 1'],
+  );
 
   const candidates = JSON.parse(
     await tool.execute({ projection: 'case_matrix', entryScope: 'candidates' }, signal),
@@ -1845,16 +1907,16 @@ test('get_export_projection keeps saved Case scope, one-Case cardinality, and ac
   assert.equal(candidates.records.every((record: Record<string, unknown>) => record.entry_scope === 'candidate'), true);
   assert.equal(candidates.records.some((record: Record<string, unknown>) => record.case === 'Driver is delayed'), true);
   assert.equal(candidates.records.some((record: Record<string, unknown>) => record.case === 'Under 15 min'), false);
-  assert.equal(candidates.records.some((record: Record<string, unknown>) => record.case === 'Over 45 min'), false);
+  assert.equal(candidates.records.some((record: Record<string, unknown>) => record.case === 'Over 45 min'), true);
 
   const all = JSON.parse(
     await tool.execute({ projection: 'case_matrix', entryScope: 'all' }, signal),
   );
   assert.equal(all.ok, true);
-  assert.equal(all.records.length, 7);
+  assert.equal(all.records.length, 8);
   assert.equal(all.records.some((record: Record<string, unknown>) => record.case === '15–45 min'), false);
   assert.equal(all.records.filter((record: Record<string, unknown>) => record.case === 'Under 15 min').length, 1);
-  assert.equal(all.records.filter((record: Record<string, unknown>) => record.case === 'Over 45 min').length, 1);
+  assert.equal(all.records.filter((record: Record<string, unknown>) => record.case === 'Over 45 min').length, 2);
 });
 
 test('get_export_projection preserves plan order and caller-supplied case matrix column order', async () => {

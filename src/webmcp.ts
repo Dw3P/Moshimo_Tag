@@ -249,8 +249,9 @@ function siteMutationResultForAgent(
   return {
     ...result,
     authority: {
-      scope: 'candidate_edit_only',
-      caseResponse: 'unchanged',
+      scope: 'countermeasure_content_only',
+      display: 'updated_immediately',
+      decisions: 'unchanged',
       nextRequiredActor: 'human',
     },
   };
@@ -2454,7 +2455,7 @@ type SitePlanItemInput = {
 };
 
 type SiteResponseInput = {
-  disposition: 'covered' | 'accept' | 'prepare' | 'plan_b' | 'dismiss';
+  disposition: 'covered' | 'accept' | 'prepare' | 'dismiss';
   actions: string[];
   when: string;
   status: 'pending' | 'done' | null;
@@ -2621,6 +2622,7 @@ type ExportColumn =
   | 'plan_body'
   | 'what_if'
   | 'case'
+  | 'countermeasure'
   | 'entry_scope'
   | 'decision'
   | 'candidate_actions'
@@ -2646,6 +2648,7 @@ type HumanSummaryColumn = {
     | 'plan_details'
     | 'what_if'
     | 'case'
+    | 'countermeasure'
     | 'selection'
     | 'decision'
     | 'candidate_actions'
@@ -2659,8 +2662,9 @@ type HumanSummaryColumn = {
 type ProjectOutputEntry = {
   whatIf: string;
   case: string;
+  countermeasure: string;
   entryScope: ExportEntryKind;
-  decision: 'covered' | 'accept' | 'prepare' | 'plan_b' | null;
+  decision: 'covered' | 'accept' | 'prepare' | null;
   candidateActions: string[];
   responseActions: string[];
   when: string;
@@ -2680,6 +2684,7 @@ const EXPORT_COLUMNS = [
   'plan_body',
   'what_if',
   'case',
+  'countermeasure',
   'entry_scope',
   'decision',
   'candidate_actions',
@@ -2697,7 +2702,8 @@ const HUMAN_SUMMARY_COLUMNS = [
   { key: 'plan', label: 'Plan' },
   { key: 'plan_details', label: 'Plan details' },
   { key: 'what_if', label: 'What if' },
-  { key: 'case', label: 'Case' },
+  { key: 'case', label: 'Situation' },
+  { key: 'countermeasure', label: 'Countermeasure' },
   { key: 'selection', label: 'Selection' },
   { key: 'decision', label: 'Decision' },
   { key: 'candidate_actions', label: 'Candidate actions' },
@@ -2706,6 +2712,16 @@ const HUMAN_SUMMARY_COLUMNS = [
   { key: 'status', label: 'Status' },
   { key: 'impact', label: 'Impact' },
 ] as const satisfies readonly HumanSummaryColumn[];
+
+const SITE_PLANNING_POLICY = {
+  defaultActor: 'project_owner',
+  collaboration:
+    'owner_only_unless_the_user_explicitly_names_other_participants',
+  actionWriting:
+    'Write every proposed action as something the Project owner can carry out alone. Do not invent co-owners, collaborators, assignees, teams, or helpers. A named third party may be the recipient of the owner action only when the user or supplied source names that party.',
+  decisionAuthority:
+    'human_only: tools may create and edit candidate countermeasures, but only the person chooses Already covered, Accept risk, Prepare, or Dismiss.',
+} as const;
 
 function siteHasOnlyKeys(
   value: Record<string, unknown>,
@@ -2979,10 +2995,14 @@ function siteCaseProjection(caseItem: MoshimoCase) {
     title: caseItem.title,
     suggestedActions: [...caseItem.suggestedActions],
     suggestedActionSource: caseItem.suggestedActionSource,
-    planBOptionsDraft:
-      caseItem.planBOptionsDraft === null
-        ? null
-        : [...caseItem.planBOptionsDraft],
+    planBOptions: caseItem.planBOptions.map((option, index) => ({
+      id: option.id,
+      version: option.version,
+      number: index + 1,
+      source: option.source,
+      action: option.action,
+      response: siteResponseProjection(option.response),
+    })),
     response: siteResponseProjection(caseItem.response),
   };
 }
@@ -3038,6 +3058,7 @@ function siteProjectMetadata(project: ProjectState) {
     viewMode: project.viewMode,
     timelineItemCount: project.timeline.length,
     gapSuggestionCount: project.gapSuggestions.length,
+    planningPolicy: SITE_PLANNING_POLICY,
   };
 }
 
@@ -3197,18 +3218,46 @@ function siteExportEntryKind(
   return 'selected';
 }
 
+type SiteCountermeasureProjection = {
+  id: string;
+  label: string;
+  candidateActions: string[];
+  response: MoshimoCase['response'];
+};
+
+function siteCountermeasures(
+  caseItem: MoshimoCase,
+): SiteCountermeasureProjection[] {
+  return [
+    {
+      id: `${caseItem.id}:main`,
+      label: 'Main action',
+      candidateActions: [...caseItem.suggestedActions],
+      response: caseItem.response,
+    },
+    ...caseItem.planBOptions.map((option, index) => ({
+      id: option.id,
+      label: `Plan B ${index + 1}`,
+      candidateActions: [option.action],
+      response: option.response,
+    })),
+  ];
+}
+
 function siteExportEntry(
   tag: MoshimoTag,
   caseItem: MoshimoCase,
+  countermeasure: SiteCountermeasureProjection,
   entryKind: ExportEntryKind,
 ): ProjectOutputEntry {
-  const response = caseItem.response;
+  const response = countermeasure.response;
   return {
     whatIf: tag.question,
     case: caseItem.title,
+    countermeasure: countermeasure.label,
     entryScope: entryKind,
     decision: response?.disposition === 'dismiss' ? null : response?.disposition ?? null,
-    candidateActions: [...caseItem.suggestedActions],
+    candidateActions: [...countermeasure.candidateActions],
     responseActions: response ? [...response.actions] : [],
     when: response?.when ?? '',
     status: response?.status ?? null,
@@ -3224,9 +3273,16 @@ function siteExportEntries(
   for (const tag of item.tags) {
     if (tag.lifecycle !== 'active') continue;
     for (const caseItem of tag.cases) {
-      const entryKind = siteExportEntryKind(caseItem.response, entryScope);
-      if (entryKind === null) continue;
-      entries.push(siteExportEntry(tag, caseItem, entryKind));
+      for (const countermeasure of siteCountermeasures(caseItem)) {
+        const entryKind = siteExportEntryKind(
+          countermeasure.response,
+          entryScope,
+        );
+        if (entryKind === null) continue;
+        entries.push(
+          siteExportEntry(tag, caseItem, countermeasure, entryKind),
+        );
+      }
     }
   }
   return entries;
@@ -3236,11 +3292,12 @@ function siteExportCaseMatrixRecord(
   item: TimelineItem,
   tag: MoshimoTag,
   caseItem: MoshimoCase,
+  countermeasure: SiteCountermeasureProjection,
   planOrder: number,
   entryKind: ExportEntryKind,
   columns: readonly ExportColumn[],
 ): Record<string, string | number | null | string[]> {
-  const entry = siteExportEntry(tag, caseItem, entryKind);
+  const entry = siteExportEntry(tag, caseItem, countermeasure, entryKind);
   const values: Record<ExportColumn, string | number | null | string[]> = {
     plan_order: planOrder,
     time_or_cue: item.timeOrCue,
@@ -3248,6 +3305,7 @@ function siteExportCaseMatrixRecord(
     plan_body: item.body,
     what_if: entry.whatIf,
     case: entry.case,
+    countermeasure: entry.countermeasure,
     entry_scope: entry.entryScope,
     decision: entry.decision,
     candidate_actions: entry.candidateActions,
@@ -3276,8 +3334,6 @@ function siteHumanDecision(response: MoshimoCase['response']): string {
       return 'Accepted';
     case 'prepare':
       return 'Prepare';
-    case 'plan_b':
-      return 'Plan B';
     default:
       return 'Undecided';
   }
@@ -3303,21 +3359,32 @@ function siteHumanSummaryRows(
     let wrotePlan = false;
     for (const tag of item.tags) {
       if (tag.lifecycle !== 'active') continue;
-      const includedCases = tag.cases.flatMap((caseItem) => {
-        const entryKind = siteExportEntryKind(caseItem.response, entryScope);
-        return entryKind === null ? [] : [{ caseItem, entryKind }];
-      });
-      includedCases.forEach(({ caseItem, entryKind }, caseIndex) => {
-        const response = caseItem.response;
+      const includedCountermeasures = tag.cases.flatMap((caseItem) =>
+        siteCountermeasures(caseItem).flatMap((countermeasure) => {
+          const entryKind = siteExportEntryKind(
+            countermeasure.response,
+            entryScope,
+          );
+          return entryKind === null
+            ? []
+            : [{ caseItem, countermeasure, entryKind }];
+        }),
+      );
+      includedCountermeasures.forEach(
+        ({ caseItem, countermeasure, entryKind }, entryIndex) => {
+        const response = countermeasure.response;
         rows.push({
           time_or_cue: wrotePlan ? '' : item.timeOrCue,
           plan: wrotePlan ? '' : item.title,
           plan_details: wrotePlan ? '' : item.body,
-          what_if: caseIndex === 0 ? tag.question : '',
+          what_if: entryIndex === 0 ? tag.question : '',
           case: caseItem.title,
+          countermeasure: countermeasure.label,
           selection: entryKind === 'selected' ? 'Selected' : 'Candidate',
           decision: siteHumanDecision(response),
-          candidate_actions: siteHumanActions(caseItem.suggestedActions),
+          candidate_actions: siteHumanActions(
+            countermeasure.candidateActions,
+          ),
           saved_response: siteHumanActions(response?.actions ?? []),
           when: response?.when ?? '',
           status:
@@ -3326,7 +3393,7 @@ function siteHumanSummaryRows(
               : response?.status === 'pending'
                 ? 'Pending'
                 : '',
-          impact: caseIndex === 0 ? siteHumanImpact(tag) : '',
+          impact: entryIndex === 0 ? siteHumanImpact(tag) : '',
         });
         wrotePlan = true;
       });
@@ -3338,6 +3405,7 @@ function siteHumanSummaryRows(
         plan_details: item.body,
         what_if: '',
         case: '',
+        countermeasure: '',
         selection: '',
         decision: '',
         candidate_actions: '',
@@ -3385,7 +3453,7 @@ function siteExportProjection(
       projection === 'timeline'
         ? 'plan_item'
         : projection === 'case_matrix'
-          ? 'case'
+          ? 'countermeasure'
           : 'section',
     orderedArrays: 'keep_in_record',
     candidateAndResponse: 'separate',
@@ -3443,18 +3511,24 @@ function siteExportProjection(
     for (const tag of item.tags) {
       if (tag.lifecycle !== 'active') continue;
       for (const caseItem of tag.cases) {
-        const entryKind = siteExportEntryKind(caseItem.response, entryScope);
-        if (entryKind === null) continue;
-        records.push(
-          siteExportCaseMatrixRecord(
-            item,
-            tag,
-            caseItem,
-            itemIndex + 1,
-            entryKind,
-            columns,
-          ),
-        );
+        for (const countermeasure of siteCountermeasures(caseItem)) {
+          const entryKind = siteExportEntryKind(
+            countermeasure.response,
+            entryScope,
+          );
+          if (entryKind === null) continue;
+          records.push(
+            siteExportCaseMatrixRecord(
+              item,
+              tag,
+              caseItem,
+              countermeasure,
+              itemIndex + 1,
+              entryKind,
+              columns,
+            ),
+          );
+        }
       }
     }
   });
@@ -3522,15 +3596,42 @@ function siteFinalProjection(project: ProjectState, entityId?: string) {
       const tags = item.tags
         .filter((tag) => tag.lifecycle === 'active')
         .map((tag) => {
-          const cases = tag.cases.filter(
-            (caseItem) =>
+          const cases = tag.cases.filter((caseItem) => {
+            const mainSelected =
               caseItem.response !== null &&
-              caseItem.response.disposition !== 'dismiss',
-          );
+              caseItem.response.disposition !== 'dismiss';
+            const planBSelected = caseItem.planBOptions.some(
+              (option) =>
+                option.response !== null &&
+                option.response.disposition !== 'dismiss',
+            );
+            return mainSelected || planBSelected;
+          });
           if (cases.length === 0) return null;
           return {
             ...siteTagProjection(tag),
-            cases: cases.map(siteCaseProjection),
+            cases: cases.map((caseItem) => ({
+              ...siteCaseProjection(caseItem),
+              response:
+                caseItem.response?.disposition === 'dismiss'
+                  ? null
+                  : siteResponseProjection(caseItem.response),
+              planBOptions: caseItem.planBOptions.flatMap((option, index) =>
+                option.response !== null &&
+                option.response.disposition !== 'dismiss'
+                  ? [
+                      {
+                        id: option.id,
+                        version: option.version,
+                        number: index + 1,
+                        source: option.source,
+                        action: option.action,
+                        response: siteResponseProjection(option.response),
+                      },
+                    ]
+                  : [],
+              ),
+            })),
           };
         })
         .filter((tag): tag is NonNullable<typeof tag> => tag !== null);
@@ -3578,6 +3679,7 @@ function siteReadListProjects(
         : 'active',
       currentProjectId: snapshot.project.id,
       currentProjectVersion: snapshot.project.version,
+      planningPolicy: SITE_PLANNING_POLICY,
       projects: siteProjectList(snapshot).map((project) => ({
         id: project.id,
         version: project.version,
@@ -4643,18 +4745,18 @@ function siteDispatchMutation(
     'caseVersion' in value
   ) {
     const planBValue = value as SiteEditPlanBOptionsInput;
-    let options: string[] | null;
+    let options: string[];
     if (planBValue.operation === 'replace') {
       options = [...planBValue.options];
     } else if (planBValue.operation === 'discard') {
-      options = null;
+      options = [];
     } else {
       const snapshot = dependencies.getSnapshot();
       const location = siteFindCase(snapshot.project, planBValue.caseId);
       if (!location) {
         return siteEntityNotFound('edit_plan_b_options', 'Case');
       }
-      options = [...(location.caseItem.planBOptionsDraft ?? [])];
+      options = location.caseItem.planBOptions.map((option) => option.action);
       if (planBValue.operation === 'add') {
         if (options.length >= 5) {
           return siteCommandFailure(
@@ -4669,7 +4771,7 @@ function siteDispatchMutation(
         if (optionIndex < 0 || optionIndex >= options.length) {
           return siteCommandFailure(
             'NOT_FOUND',
-            `edit_plan_b_options: Option ${planBValue.optionNumber} was not found in this draft.`,
+            `edit_plan_b_options: Plan B ${planBValue.optionNumber} was not found.`,
             false,
           );
         }
@@ -4977,7 +5079,7 @@ function createListProjectsTool(
     name: 'list_projects',
     title: 'List Projects',
     description:
-      'Read workspace status, the current Project context, and bounded locally saved Project summaries. When workspaceStatus is empty, use currentProjectId and currentProjectVersion only as the create_project mutation context.',
+      'Read workspace status, the current Project context, the planningPolicy that governs agent-authored actions, and bounded locally saved Project summaries. When workspaceStatus is empty, use currentProjectId and currentProjectVersion only as the create_project mutation context.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -4995,7 +5097,7 @@ function createGetProjectTool(
     name: 'get_project',
     title: 'Read Project',
     description:
-      'Read a bounded Project, Plan, What-if, Situation, or selected Final projection. The API section value case and cases fields refer to Situations: concrete conditions or outcomes under a broader What-if. In saved response data, covered is shown in the page as Already covered and accept as Accept risk.',
+      'Read a bounded Project, Plan, What-if, Situation, or selected Final projection plus its planningPolicy. The API section value case and cases fields refer to Situations: concrete conditions or outcomes under a broader What-if. suggestedActions are the Situation main countermeasure; planBOptions are real fallback countermeasures nested under that Situation and shown immediately. Each main or Plan B countermeasure has its own human-only response. In response data, covered is shown as Already covered and accept as Accept risk.',
     inputSchema: {
       type: 'object',
       required: ['section'],
@@ -5024,7 +5126,7 @@ function createProjectTool(
     name: 'create_project',
     title: 'Create Project',
     description:
-      'Create a Project, optionally with one atomic ordered Plan bundle. Each What-if is a broader possibility; each nested Case is a concrete Situation or outcome under that What-if and contains candidate actions. The API keeps the cases field name for compatibility, while the page labels these entries Situation. Candidate actions remain undecided for the person to accept, edit, or dismiss in the page UI. After this tool succeeds, do not operate page response choices or Save response; only the person may decide. On an empty workspace, first call list_projects and use its currentProjectId/currentProjectVersion as this mutation context.',
+      'Create a Project, optionally with one atomic ordered Plan bundle. Each What-if is a broader possibility; each nested Case is a concrete Situation or outcome and suggestedActions are its main countermeasure. The API keeps the cases field name for compatibility, while the page labels these entries Situation. Unless the user explicitly names other participants, write every action for the Project owner to carry out alone; never invent co-owners, collaborators, assignees, teams, or helpers. Candidate countermeasures remain undecided. Add fallback countermeasures afterward with edit_plan_b_options when useful. Never operate page response choices or Save response; only the person may decide. On an empty workspace, first call list_projects and use its currentProjectId/currentProjectVersion as this mutation context.',
     inputSchema: {
       type: 'object',
       required: ['description', 'idempotencyKey', 'projectId', 'projectVersion', 'title'],
@@ -5156,7 +5258,7 @@ function createEditPlanTool(
   return {
     name: 'edit_plan',
     title: 'Edit Plan',
-    description: 'Perform exactly one bounded add, update, move, or delete Plan operation.',
+    description: 'Perform exactly one bounded add, update, move, or delete Plan operation. Unless the user explicitly names other participants, write the step as an action the Project owner can carry out alone.',
     inputSchema: {
       oneOf: [
         siteSchema('add', ['timeOrCue', 'title', 'body'], {
@@ -5235,7 +5337,7 @@ function createEditWhatIfTool(
     name: 'edit_what_if',
     title: 'Edit What-if',
     description:
-      'Perform exactly one bounded add, update, delete, impact, or stable impact-sort operation. A What-if is the broader possibility; each nested Case is a concrete Situation or outcome under it. The API keeps the cases field name for compatibility. Added Situations contain candidate actions only and remain undecided.',
+      'Perform exactly one bounded add, update, delete, impact, or stable impact-sort operation. A What-if is the broader possibility; each nested Case is a concrete Situation or outcome under it, and suggestedActions are its main countermeasure. The API keeps the cases field name for compatibility. Unless the user explicitly names other participants, write every action for the Project owner to carry out alone. Added countermeasures appear immediately but remain undecided.',
     inputSchema: {
       oneOf: [
         siteSchema('add', [
@@ -5299,7 +5401,7 @@ function createEditCaseTool(
     name: 'edit_case',
     title: 'Edit Situation',
     description:
-      'Add, update, or delete one bounded Situation and its concrete candidate actions under a broader What-if. The tool name edit_case and Case IDs remain unchanged for compatibility. This tool cannot mark Already covered, Accept risk, dismiss, or save a human response. After this tool succeeds, do not operate page response choices or Save response; only the person may decide.',
+      'Add, update, or delete one bounded Situation and its main countermeasure under a broader What-if. The tool name edit_case and Case IDs remain unchanged for compatibility. Unless the user explicitly names other participants, write every action for the Project owner to carry out alone. Editing a main countermeasure updates the page immediately and clears its earlier decision for human review. This tool cannot mark Already covered, Accept risk, Prepare, Dismiss, or save any human response.',
     inputSchema: {
       oneOf: [
         siteSchema('add', ['tagId', 'tagVersion', 'title', 'suggestedActions'], {
@@ -5340,9 +5442,9 @@ function createEditPlanBOptionsTool(
   const optionNumber = { type: 'integer', minimum: 1, maximum: 5 };
   return {
     name: 'edit_plan_b_options',
-    title: 'Edit Plan B Options',
+    title: 'Edit Plan B Countermeasures',
     description:
-      'Create or edit the unsaved Plan B option draft for any Situation under any What-if. The API keeps Case IDs and caseId for compatibility. Use replace with an empty options array to create an empty draft; use add, update, or delete for individual options; use discard to remove the draft. optionNumber is one-based (Option 1 through Option 5). This tool never accepts or saves the Plan B decision. After it succeeds, leave the Situation undecided and stop; do not operate its page response choices or Save response. Only the person may review and save a decision.',
+      'Create, replace, edit, or delete real Plan B fallback countermeasures under any Situation. They appear immediately beneath the main countermeasure; there is no draft or Review step. Plan B means the next countermeasure to use if an earlier one is not enough or cannot work. It is not the preparation needed to carry out the main countermeasure. The API keeps Case IDs, caseId, options, and optionNumber for compatibility. Use replace with an empty options array or discard to remove all Plan Bs; use add, update, or delete for one Plan B. optionNumber is one-based (Plan B 1 through Plan B 5). Unless the user explicitly names other participants, write each Plan B for the Project owner to carry out alone. Each Plan B remains undecided and has its own human-only Already covered, Accept risk, Prepare, or Dismiss response. Never operate response choices or Save response.',
     inputSchema: {
       oneOf: [
         siteSchema('replace', ['caseId', 'caseVersion', 'options'], {

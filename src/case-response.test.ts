@@ -39,6 +39,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
       type: 'case.response.save',
       payload: {
         caseId: 'case-traffic-light',
+      planBId: null,
         disposition: 'covered',
         actions: [],
         when: '',
@@ -66,6 +67,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
       type: 'case.response.save',
       payload: {
         caseId: 'case-traffic-light',
+      planBId: null,
         disposition: 'accept',
         actions: [],
         when: '',
@@ -84,6 +86,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
       type: 'case.response.save',
       payload: {
         caseId: 'case-traffic-light',
+      planBId: null,
         disposition: 'accept',
         actions: ['Continue as an experiment and accept the result.'],
         when: '',
@@ -102,6 +105,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
       type: 'case.response.save',
       payload: {
         caseId: 'case-traffic-light',
+      planBId: null,
         disposition: 'covered',
         actions: ['The main Plan already includes a backup route.'],
         when: '',
@@ -120,6 +124,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
       type: 'case.response.save',
       payload: {
         caseId: 'case-traffic-medium',
+      planBId: null,
         disposition: 'prepare',
         actions: ['Check the airport rail route before leaving.'],
         when: 'Before leaving',
@@ -138,43 +143,54 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
     },
   );
 
-  const planB = {
+  const addedPlanB = dispatch({
+    type: 'case.planB.add',
+    payload: {
+      caseId: 'case-traffic-heavy',
+      action: 'Switch to a later flight if the rail route is unavailable.',
+    },
+  });
+  assert.equal(addedPlanB.ok, true);
+  const planBId =
+    getSnapshot().project.timeline[0].tags[0].cases[2].planBOptions[0].id;
+  const planBResponse = {
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-heavy',
-      disposition: 'plan_b',
-      actions: [
-        'Switch to the airport rail route.',
-        'Ask the airline about a later flight before leaving home.',
-      ],
+      planBId,
+      disposition: 'prepare',
+      actions: ['Check the later-flight inventory before leaving home.'],
       when: '',
-      status: null,
+      status: 'pending',
     },
   } as const;
-  assert.equal(dispatch(planB).ok, true);
+  assert.equal(dispatch(planBResponse).ok, true);
   const planBState = getSnapshot();
   assert.deepEqual(
-    planBState.project.timeline[0].tags[0].cases[2].response?.actions,
-    planB.payload.actions,
+    planBState.project.timeline[0].tags[0].cases[2].planBOptions[0].response
+      ?.actions,
+    planBResponse.payload.actions,
   );
+  assert.equal(planBState.project.timeline[0].tags[0].cases[2].response, null);
   assert.deepEqual(initializePersistence(() => storage), {
     kind: 'ready',
     source: 'stored',
   });
   assert.deepEqual(
-    getSnapshot().project.timeline[0].tags[0].cases[2].response?.actions,
-    planB.payload.actions,
+    getSnapshot().project.timeline[0].tags[0].cases[2].planBOptions[0].response
+      ?.actions,
+    planBResponse.payload.actions,
   );
 
   const unchanged = getSnapshot();
-  const unchangedResult = dispatch(planB);
+  const unchangedResult = dispatch(planBResponse);
   assert.equal(unchangedResult.ok, true);
   assert.equal(unchangedResult.code, 'NO_CHANGES');
   assert.strictEqual(getSnapshot(), unchanged);
 
   const invalidPayloads = [
-    { disposition: 'plan_b', actions: [] },
-    { disposition: 'plan_b', actions: ['1', '2', '3', '4', '5', '6'] },
+    { disposition: 'prepare', actions: [] },
+    { disposition: 'prepare', actions: ['1', '2'] },
     { disposition: 'accept', actions: ['1', '2'] },
     { disposition: 'covered', actions: ['one memo', 'a second memo'] },
   ] as const;
@@ -184,6 +200,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
       type: 'case.response.save',
       payload: {
         caseId: 'case-traffic-heavy',
+      planBId: null,
         disposition: invalid.disposition,
         actions: [...invalid.actions],
         when: '',
@@ -200,6 +217,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-heavy',
+      planBId: null,
       disposition: 'accept',
       actions: ['Use the rail route.'],
       when: 'Only prepare may use this',
@@ -220,6 +238,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
       type: 'case.response.save',
       payload: {
         caseId: 'case-taxi-late',
+      planBId: null,
         disposition: 'dismiss',
         actions: [],
         when: '',
@@ -245,8 +264,9 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
   });
   assert.equal(getSnapshot().project.viewMode, 'final');
   assert.deepEqual(
-    getSnapshot().project.timeline[0].tags[0].cases[2].response?.actions,
-    planB.payload.actions,
+    getSnapshot().project.timeline[0].tags[0].cases[2].planBOptions[0].response
+      ?.actions,
+    planBResponse.payload.actions,
   );
   assert.equal(
     dispatch({
@@ -270,6 +290,7 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
     type: 'case.response.save',
     payload: {
       caseId: 'case-taxi-missing',
+      planBId: null,
       disposition: 'accept',
       actions: ['Request another car.'],
       when: '',
@@ -287,4 +308,93 @@ test('Case responses are human-owned, bounded, isolated, and durable', () => {
   assert.equal(failedFinish.ok, false);
   assert.equal(failedFinish.code, 'SAVE_FAILED');
   assert.strictEqual(getSnapshot(), beforeFailedSave);
+});
+
+test('Main and Plan B countermeasures are independently editable, decidable, and deletable', () => {
+  const storage = new ResponseStorage();
+  assert.equal(initializePersistence(() => storage).kind, 'ready');
+
+  assert.equal(
+    dispatch({
+      type: 'case.planB.add',
+      payload: {
+        caseId: 'case-traffic-light',
+        action: 'Take the train if the road route stops moving.',
+      },
+    }).ok,
+    true,
+  );
+  const currentCase = () =>
+    getSnapshot().project.timeline[0].tags[0].cases[0];
+  const planBId = currentCase().planBOptions[0].id;
+
+  assert.equal(
+    dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: currentCase().id,
+        planBId: null,
+        disposition: 'covered',
+        actions: [],
+        when: '',
+        status: null,
+      },
+    }).ok,
+    true,
+  );
+  assert.equal(
+    dispatch({
+      type: 'case.response.save',
+      payload: {
+        caseId: currentCase().id,
+        planBId,
+        disposition: 'accept',
+        actions: ['Use only if the delay becomes severe.'],
+        when: '',
+        status: null,
+      },
+    }).ok,
+    true,
+  );
+  assert.equal(currentCase().response?.disposition, 'covered');
+  assert.equal(currentCase().planBOptions[0].response?.disposition, 'accept');
+
+  assert.equal(
+    dispatch({
+      type: 'case.action.update',
+      payload: {
+        caseId: currentCase().id,
+        suggestedActions: ['Leave ten minutes earlier on the usual route.'],
+      },
+    }).ok,
+    true,
+  );
+  assert.equal(currentCase().response, null);
+  assert.equal(currentCase().planBOptions[0].response?.disposition, 'accept');
+
+  assert.equal(
+    dispatch({
+      type: 'case.planB.update',
+      payload: {
+        caseId: currentCase().id,
+        planBId,
+        action: 'Take the nearest rail route if traffic stops moving.',
+      },
+    }).ok,
+    true,
+  );
+  assert.equal(currentCase().planBOptions[0].response, null);
+  assert.equal(
+    currentCase().planBOptions[0].action,
+    'Take the nearest rail route if traffic stops moving.',
+  );
+
+  assert.equal(
+    dispatch({
+      type: 'case.planB.delete',
+      payload: { caseId: currentCase().id, planBId },
+    }).ok,
+    true,
+  );
+  assert.deepEqual(currentCase().planBOptions, []);
 });

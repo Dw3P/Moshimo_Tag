@@ -516,6 +516,7 @@ test('resolved Tag history is read-only and does not block an active duplicate q
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-light',
+      planBId: null,
       disposition: 'covered',
       actions: [],
       when: '',
@@ -765,6 +766,7 @@ test('direct agent commands create, edit, sort, and delete bounded What-if data'
     type: 'case.response.save',
     payload: {
       caseId: addedCaseId,
+      planBId: null,
       disposition: 'covered',
       actions: [],
       when: '',
@@ -806,6 +808,7 @@ test('direct agent commands create, edit, sort, and delete bounded What-if data'
     type: 'case.response.save',
     payload: {
       caseId: remainingCaseId ?? '',
+      planBId: null,
       disposition: 'covered',
       actions: [],
       when: '',
@@ -868,6 +871,7 @@ test('deleting the final Case removes its What-if and history restores it', () =
     type: 'case.response.save',
     payload: {
       caseId: onlyCase.id,
+      planBId: null,
       disposition: 'covered',
       actions: [],
       when: '',

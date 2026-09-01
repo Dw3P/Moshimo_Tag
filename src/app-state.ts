@@ -12,8 +12,11 @@ export type CaseDisposition =
   | 'covered'
   | 'accept'
   | 'prepare'
-  | 'plan_b'
   | 'dismiss';
+type LegacyCaseDisposition = CaseDisposition | 'plan_b';
+type LegacyCaseResponse = Omit<CaseResponse, 'disposition'> & {
+  disposition: LegacyCaseDisposition;
+};
 export type PreparationStatus = 'pending' | 'done';
 export type ViewMode = 'editing' | 'final';
 export type ReviewKind =
@@ -31,7 +34,15 @@ export interface MoshimoCase {
   title: string;
   suggestedActions: string[];
   suggestedActionSource: SuggestedActionSource | null;
-  planBOptionsDraft: string[] | null;
+  planBOptions: PlanBCountermeasure[];
+  response: CaseResponse | null;
+}
+
+export interface PlanBCountermeasure {
+  id: string;
+  version: number;
+  source: SuggestedActionSource;
+  action: string;
   response: CaseResponse | null;
 }
 
@@ -215,7 +226,7 @@ type RecheckOutcomeInput =
     };
 
 export interface AppState {
-  schemaVersion: 6;
+  schemaVersion: 7;
   project: ProjectState;
   projects: ProjectState[];
   undoDelete: DeletedTimelineItem | null;
@@ -388,6 +399,13 @@ export type AppCommand =
       };
     }
   | {
+      type: 'case.action.update';
+      payload: {
+        caseId: string;
+        suggestedActions: string[];
+      };
+    }
+  | {
       type: 'case.delete';
       payload: {
         caseId: string;
@@ -399,15 +417,28 @@ export type AppCommand =
       type: 'case.planBOptions.set';
       payload: {
         caseId: string;
-        options: string[] | null;
+        options: string[];
         projectVersion?: number;
         caseVersion?: number;
       };
     }
   | {
+      type: 'case.planB.add';
+      payload: { caseId: string; action: string };
+    }
+  | {
+      type: 'case.planB.update';
+      payload: { caseId: string; planBId: string; action: string };
+    }
+  | {
+      type: 'case.planB.delete';
+      payload: { caseId: string; planBId: string };
+    }
+  | {
       type: 'case.response.save';
       payload: {
         caseId: string;
+        planBId: string | null;
         disposition: CaseDisposition;
         actions: string[];
         when: string;
@@ -471,7 +502,7 @@ export type PersistenceResult =
     };
 
 const emptyWorkspaceState: AppState = {
-  schemaVersion: 6,
+  schemaVersion: 7,
   project: {
     id: EMPTY_WORKSPACE_PROJECT_ID,
     version: 1,
@@ -593,7 +624,6 @@ function isCaseDisposition(value: unknown): value is CaseDisposition {
     value === 'covered' ||
     value === 'accept' ||
     value === 'prepare' ||
-    value === 'plan_b' ||
     value === 'dismiss'
   );
 }
@@ -1592,6 +1622,23 @@ function parseCommand(raw: unknown): AppCommand | null {
         },
       };
     }
+    case 'case.action.update': {
+      if (
+        !hasExactKeys(payload, ['caseId', 'suggestedActions']) ||
+        typeof payload.caseId !== 'string' ||
+        !Array.isArray(payload.suggestedActions) ||
+        !payload.suggestedActions.every((action) => typeof action === 'string')
+      ) {
+        return null;
+      }
+      return {
+        type: raw.type,
+        payload: {
+          caseId: payload.caseId,
+          suggestedActions: [...payload.suggestedActions],
+        },
+      };
+    }
     case 'case.delete': {
       const versions = parseOptionalVersions(payload, [
         'projectVersion',
@@ -1623,9 +1670,8 @@ function parseCommand(raw: unknown): AppCommand | null {
           'projectVersion',
         ]) ||
         typeof payload.caseId !== 'string' ||
-        (payload.options !== null &&
-          (!Array.isArray(payload.options) ||
-            !payload.options.every((option) => typeof option === 'string'))) ||
+        !Array.isArray(payload.options) ||
+        !payload.options.every((option) => typeof option === 'string') ||
         versions === null
       ) {
         return null;
@@ -1634,10 +1680,53 @@ function parseCommand(raw: unknown): AppCommand | null {
         type: raw.type,
         payload: {
           caseId: payload.caseId,
-          options:
-            payload.options === null ? null : [...payload.options],
+          options: [...payload.options],
           ...versions,
         },
+      };
+    }
+    case 'case.planB.add': {
+      if (
+        !hasExactKeys(payload, ['action', 'caseId']) ||
+        typeof payload.caseId !== 'string' ||
+        typeof payload.action !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        type: raw.type,
+        payload: { caseId: payload.caseId, action: payload.action },
+      };
+    }
+    case 'case.planB.update': {
+      if (
+        !hasExactKeys(payload, ['action', 'caseId', 'planBId']) ||
+        typeof payload.caseId !== 'string' ||
+        typeof payload.planBId !== 'string' ||
+        typeof payload.action !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        type: raw.type,
+        payload: {
+          caseId: payload.caseId,
+          planBId: payload.planBId,
+          action: payload.action,
+        },
+      };
+    }
+    case 'case.planB.delete': {
+      if (
+        !hasExactKeys(payload, ['caseId', 'planBId']) ||
+        typeof payload.caseId !== 'string' ||
+        typeof payload.planBId !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        type: raw.type,
+        payload: { caseId: payload.caseId, planBId: payload.planBId },
       };
     }
     case 'case.response.save': {
@@ -1646,10 +1735,12 @@ function parseCommand(raw: unknown): AppCommand | null {
           'actions',
           'caseId',
           'disposition',
+          'planBId',
           'status',
           'when',
         ]) ||
         typeof payload.caseId !== 'string' ||
+        (payload.planBId !== null && typeof payload.planBId !== 'string') ||
         !isCaseDisposition(payload.disposition) ||
         !Array.isArray(payload.actions) ||
         !payload.actions.every((action) => typeof action === 'string') ||
@@ -1662,6 +1753,7 @@ function parseCommand(raw: unknown): AppCommand | null {
         type: raw.type,
         payload: {
           caseId: payload.caseId,
+          planBId: payload.planBId,
           disposition: payload.disposition,
           actions: [...payload.actions],
           when: payload.when,
@@ -1749,12 +1841,16 @@ function addUniqueId(value: unknown, ids: Set<string>): value is string {
   return true;
 }
 
-function validateStoredCaseResponse(value: unknown): boolean {
+function validateStoredCaseResponse(
+  value: unknown,
+  allowLegacyPlanB = false,
+): boolean {
   if (value === null) return true;
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ['actions', 'disposition', 'status', 'when']) ||
-    !isCaseDisposition(value.disposition) ||
+    (!isCaseDisposition(value.disposition) &&
+      !(allowLegacyPlanB && value.disposition === 'plan_b')) ||
     !Array.isArray(value.actions) ||
     !value.actions.every((action) => isBoundedString(action, 1, 1200)) ||
     textLength((value.actions as string[]).join('')) > 4800 ||
@@ -1775,6 +1871,7 @@ function validateStoredCaseResponse(value: unknown): boolean {
   if (value.disposition === 'prepare') {
     return value.actions.length === 1;
   }
+  if (value.disposition !== 'plan_b') return false;
   return (
     value.actions.length >= 1 &&
     value.actions.length <= 5 &&
@@ -1790,12 +1887,27 @@ function validateStoredImpact(value: unknown): boolean {
   return parsed.value.penalty === clean(parsed.value.penalty);
 }
 
-type StoredSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6;
+type StoredSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+function validateStoredPlanBOption(
+  value: unknown,
+  ids: Set<string>,
+): value is PlanBCountermeasure {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['action', 'id', 'response', 'source', 'version']) &&
+    addUniqueId(value.id, ids) &&
+    isVersion(value.version) &&
+    (value.source === 'agent' || value.source === 'human') &&
+    isBoundedString(value.action, 1, 1200) &&
+    validateStoredCaseResponse(value.response)
+  );
+}
 
 function validateStoredCase(
   value: unknown,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 6,
+  schemaVersion: StoredSchemaVersion = 7,
 ): boolean {
   if (!isRecord(value)) return false;
   const currentShape = hasExactKeys(value, [
@@ -1825,6 +1937,16 @@ function validateStoredCase(
     'title',
     'version',
   ]);
+  const v7Shape = hasExactKeys(value, [
+    'id',
+    'planBOptions',
+    'response',
+    'source',
+    'suggestedActionSource',
+    'suggestedActions',
+    'title',
+    'version',
+  ]);
   const legacyShape = hasExactKeys(value, [
     'id',
     'source',
@@ -1832,7 +1954,8 @@ function validateStoredCase(
     'title',
   ]);
   const useLegacyShape = schemaVersion === 1 && legacyShape && !currentShape;
-  if (schemaVersion >= 6 && !v6Shape) return false;
+  if (schemaVersion >= 7 && !v7Shape) return false;
+  if (schemaVersion === 6 && !v6Shape) return false;
   if (schemaVersion >= 4 && schemaVersion < 6 && !v5Shape) return false;
   if (schemaVersion >= 2 && schemaVersion < 4 && !currentShape) return false;
   if (schemaVersion === 1 && !currentShape && !useLegacyShape) return false;
@@ -1864,7 +1987,7 @@ function validateStoredCase(
       return false;
     }
   }
-  if (schemaVersion >= 6) {
+  if (schemaVersion === 6) {
     const planBOptionsDraft = value.planBOptionsDraft;
     if (
       planBOptionsDraft !== null &&
@@ -1878,8 +2001,24 @@ function validateStoredCase(
       return false;
     }
   }
+  if (
+    schemaVersion >= 7 &&
+    (!Array.isArray(value.planBOptions) ||
+      value.planBOptions.length > 5 ||
+      !value.planBOptions.every((option) =>
+        validateStoredPlanBOption(option, ids),
+      ) ||
+      textLength(
+        (value.planBOptions as PlanBCountermeasure[])
+          .map((option) => option.action)
+          .join(''),
+      ) > 4800)
+  ) {
+    return false;
+  }
   return (
-    isVersion(value.version) && validateStoredCaseResponse(value.response)
+    isVersion(value.version) &&
+    validateStoredCaseResponse(value.response, schemaVersion < 7)
   );
 }
 
@@ -1887,7 +2026,7 @@ function validateStoredTag(
   value: unknown,
   anchorItemId: string,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 6,
+  schemaVersion: StoredSchemaVersion = 7,
 ): boolean {
   if (!isRecord(value)) return false;
   const v4Shape = hasExactKeys(value, [
@@ -1996,7 +2135,10 @@ function validateStoredTag(
     ...cases.flatMap((caseItem) => [
       caseItem.title,
       ...caseItem.suggestedActions,
-      ...(caseItem.planBOptionsDraft ?? []),
+      ...(schemaVersion >= 7
+        ? caseItem.planBOptions.map((option) => option.action)
+        : ((caseItem as unknown as { planBOptionsDraft?: string[] | null })
+            .planBOptionsDraft ?? [])),
     ]),
   ].join('');
   return textLength(tagText) <= 6000;
@@ -2005,7 +2147,7 @@ function validateStoredTag(
 function validateStoredItem(
   value: unknown,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 6,
+  schemaVersion: StoredSchemaVersion = 7,
 ): boolean {
   if (
     !isRecord(value) ||
@@ -2071,7 +2213,7 @@ function validateStoredReviewRequest(
   value: unknown,
   project: ProjectState,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 6,
+  schemaVersion: StoredSchemaVersion = 7,
 ): boolean {
   if (
     !isRecord(value) ||
@@ -2178,7 +2320,7 @@ function validateStoredProject(
   ids: Set<string>,
   allowActiveReviewRequest: boolean,
   minimumTimelineItems = 0,
-  schemaVersion: StoredSchemaVersion = 6,
+  schemaVersion: StoredSchemaVersion = 7,
 ): value is ProjectState {
   if (!isRecord(value)) return false;
 
@@ -2281,7 +2423,7 @@ function validateStoredProject(
 function validateStoredUndoDelete(
   value: unknown,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 6,
+  schemaVersion: StoredSchemaVersion = 7,
 ): boolean {
   if (value === null) return true;
   if (
@@ -2339,6 +2481,13 @@ interface StoredAppStateV5 {
   undoDelete: unknown;
 }
 
+interface StoredAppStateV6 {
+  schemaVersion: 6;
+  project: unknown;
+  projects: unknown[];
+  undoDelete: unknown;
+}
+
 function validateLegacyAppState(value: unknown): value is LegacyAppState {
   if (
     !isRecord(value) ||
@@ -2388,7 +2537,7 @@ function validateStoredAppStateV2(value: unknown): value is StoredAppStateV2 {
 
 function validateStoredAppState(
   value: unknown,
-  schemaVersion: 3 | 4 | 5 | 6,
+  schemaVersion: 3 | 4 | 5 | 6 | 7,
 ): boolean {
   if (
     !isRecord(value) ||
@@ -2433,21 +2582,42 @@ function validateStoredAppStateV5(value: unknown): value is StoredAppStateV5 {
   return validateStoredAppState(value, 5);
 }
 
-export function validateAppState(value: unknown): value is AppState {
+function validateStoredAppStateV6(value: unknown): value is StoredAppStateV6 {
   return validateStoredAppState(value, 6);
 }
 
-function migrateCaseToV6(value: Record<string, unknown>): MoshimoCase {
+export function validateAppState(value: unknown): value is AppState {
+  return validateStoredAppState(value, 7);
+}
+
+function legacyPlanBId(caseId: string, index: number): string {
+  let hash = 2166136261;
+  for (const character of caseId) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  const stem = Array.from(caseId).slice(0, 120).join('');
+  return `planb-${stem}-${(hash >>> 0).toString(36)}-${index + 1}`;
+}
+
+function migrateCaseToV7(value: Record<string, unknown>): MoshimoCase {
   const source = value.source as TagSource;
   const suggestedActions = [...(value.suggestedActions as string[])];
-  const response =
-    'response' in value ? (value.response as CaseResponse | null) : null;
+  const legacyResponse =
+    'response' in value ? (value.response as LegacyCaseResponse | null) : null;
   const version = typeof value.version === 'number' ? value.version : 1;
+  const caseId = value.id as string;
+  const savedLegacyPlanB = legacyResponse?.disposition === 'plan_b';
+  const legacyPlanBOptions = savedLegacyPlanB
+    ? [...legacyResponse.actions]
+    : 'planBOptionsDraft' in value && value.planBOptionsDraft !== null
+      ? [...(value.planBOptionsDraft as string[])]
+      : [];
   const legacyHumanCaseWasFilledByAgent =
     source === 'human' &&
-    (suggestedActions.length > 1 || (version > 1 && response === null));
+    (suggestedActions.length > 1 || (version > 1 && legacyResponse === null));
   return {
-    id: value.id as string,
+    id: caseId,
     version,
     source,
     title: value.title as string,
@@ -2458,17 +2628,28 @@ function migrateCaseToV6(value: Record<string, unknown>): MoshimoCase {
         : source === 'agent' || legacyHumanCaseWasFilledByAgent
           ? 'agent'
           : 'human',
-    planBOptionsDraft:
-      'planBOptionsDraft' in value
-        ? value.planBOptionsDraft === null
-          ? null
-          : [...(value.planBOptionsDraft as string[])]
+    planBOptions: legacyPlanBOptions.map((action, index) => ({
+      id: legacyPlanBId(caseId, index),
+      version: 1,
+      source: savedLegacyPlanB ? 'human' : 'agent',
+      action,
+      response: savedLegacyPlanB
+        ? {
+            disposition: 'prepare',
+            actions: [action],
+            when: '',
+            status: 'pending',
+          }
         : null,
-    response,
+    })),
+    response:
+      legacyResponse && legacyResponse.disposition !== 'plan_b'
+        ? (legacyResponse as CaseResponse)
+        : null,
   };
 }
 
-function migrateTagToV6(
+function migrateTagToV7(
   value: Record<string, unknown>,
   itemId: string,
   itemVersion: number,
@@ -2495,11 +2676,11 @@ function migrateTagToV6(
     summary: value.summary as string,
     impact:
       'impact' in value ? (value.impact as TagImpact | null) : null,
-    cases: (value.cases as Record<string, unknown>[]).map(migrateCaseToV6),
+    cases: (value.cases as Record<string, unknown>[]).map(migrateCaseToV7),
   };
 }
 
-function migrateItemToV6(
+function migrateItemToV7(
   value: Record<string, unknown>,
   projectVersion: number,
 ): TimelineItem {
@@ -2513,17 +2694,17 @@ function migrateItemToV6(
     body: value.body as string,
     status: value.status === 'draft' ? 'draft' : 'scheduled',
     tags: (value.tags as Record<string, unknown>[]).map((tag) =>
-      migrateTagToV6(tag, itemId, itemVersion, projectVersion),
+      migrateTagToV7(tag, itemId, itemVersion, projectVersion),
     ),
   };
 }
 
-function migrateProjectToV6(value: Record<string, unknown>): ProjectState {
+function migrateProjectToV7(value: Record<string, unknown>): ProjectState {
   const projectVersion = typeof value.version === 'number' ? value.version : 1;
   const projectId = value.id as string;
   const timeline = Array.isArray(value.timeline)
     ? (value.timeline as Record<string, unknown>[]).map((item) =>
-        migrateItemToV6(item, projectVersion),
+        migrateItemToV7(item, projectVersion),
       )
     : [];
   return {
@@ -2544,12 +2725,12 @@ function migrateProjectToV6(value: Record<string, unknown>): ProjectState {
   };
 }
 
-function migrateUndoDeleteToV6(
+function migrateUndoDeleteToV7(
   value: unknown,
   projectVersion: number,
 ): DeletedTimelineItem | null {
   if (!isRecord(value) || !isRecord(value.item)) return null;
-  const item = migrateItemToV6(value.item, projectVersion);
+  const item = migrateItemToV7(value.item, projectVersion);
   const gapSuggestions = Array.isArray(value.gapSuggestions)
     ? (value.gapSuggestions as PlanGapSuggestion[]).map((gap) => ({ ...gap }))
     : [];
@@ -2562,10 +2743,10 @@ function migrateUndoDeleteToV6(
 
 function migrateLegacyState(value: LegacyAppState): AppState {
   return {
-    schemaVersion: 6,
-    project: migrateProjectToV6(value.project as Record<string, unknown>),
+    schemaVersion: 7,
+    project: migrateProjectToV7(value.project as Record<string, unknown>),
     projects: [],
-    undoDelete: migrateUndoDeleteToV6(
+    undoDelete: migrateUndoDeleteToV7(
       value.undoDelete,
       (value.project as Record<string, unknown>).version as number,
     ),
@@ -2573,50 +2754,62 @@ function migrateLegacyState(value: LegacyAppState): AppState {
 }
 
 function migrateV2State(value: StoredAppStateV2): AppState {
-  const project = migrateProjectToV6(value.project as Record<string, unknown>);
+  const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     project,
     projects: value.projects.map((storedProject) =>
-      migrateProjectToV6(storedProject as Record<string, unknown>),
+      migrateProjectToV7(storedProject as Record<string, unknown>),
     ),
-    undoDelete: migrateUndoDeleteToV6(value.undoDelete, project.version),
+    undoDelete: migrateUndoDeleteToV7(value.undoDelete, project.version),
   };
 }
 
 function migrateV3State(value: StoredAppStateV3): AppState {
-  const project = migrateProjectToV6(value.project as Record<string, unknown>);
+  const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     project,
     projects: value.projects.map((storedProject) =>
-      migrateProjectToV6(storedProject as Record<string, unknown>),
+      migrateProjectToV7(storedProject as Record<string, unknown>),
     ),
-    undoDelete: migrateUndoDeleteToV6(value.undoDelete, project.version),
+    undoDelete: migrateUndoDeleteToV7(value.undoDelete, project.version),
   };
 }
 
 function migrateV4State(value: StoredAppStateV4): AppState {
-  const project = migrateProjectToV6(value.project as Record<string, unknown>);
+  const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     project,
     projects: value.projects.map((storedProject) =>
-      migrateProjectToV6(storedProject as Record<string, unknown>),
+      migrateProjectToV7(storedProject as Record<string, unknown>),
     ),
-    undoDelete: migrateUndoDeleteToV6(value.undoDelete, project.version),
+    undoDelete: migrateUndoDeleteToV7(value.undoDelete, project.version),
   };
 }
 
 function migrateV5State(value: StoredAppStateV5): AppState {
-  const project = migrateProjectToV6(value.project as Record<string, unknown>);
+  const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     project,
     projects: value.projects.map((storedProject) =>
-      migrateProjectToV6(storedProject as Record<string, unknown>),
+      migrateProjectToV7(storedProject as Record<string, unknown>),
     ),
-    undoDelete: migrateUndoDeleteToV6(value.undoDelete, project.version),
+    undoDelete: migrateUndoDeleteToV7(value.undoDelete, project.version),
+  };
+}
+
+function migrateV6State(value: StoredAppStateV6): AppState {
+  const project = migrateProjectToV7(value.project as Record<string, unknown>);
+  return {
+    schemaVersion: 7,
+    project,
+    projects: value.projects.map((storedProject) =>
+      migrateProjectToV7(storedProject as Record<string, unknown>),
+    ),
+    undoDelete: migrateUndoDeleteToV7(value.undoDelete, project.version),
   };
 }
 
@@ -2651,7 +2844,7 @@ function removeLegacyDebugProject(value: AppState): {
   const [project, ...remainingProjects] = projects;
   return {
     value: {
-      schemaVersion: 6,
+      schemaVersion: 7,
       project,
       projects: remainingProjects,
       undoDelete: null,
@@ -2779,7 +2972,16 @@ export function initializePersistence(
     }
     return activateStoredState(migrateV5State(parsed));
   }
-  if (parsed.schemaVersion !== 6) {
+  if (parsed.schemaVersion === 6) {
+    if (!validateStoredAppStateV6(parsed)) {
+      return recovery(
+        'invalid_shape',
+        'local.load: saved Plan data has an invalid structure.',
+      );
+    }
+    return activateStoredState(migrateV6State(parsed));
+  }
+  if (parsed.schemaVersion !== 7) {
     return recovery(
       'unsupported_version',
       'local.load: this saved Plan uses an unsupported version.',
@@ -3935,7 +4137,7 @@ function makeAgentCase(input: ReviewSuggestionCaseInput): MoshimoCase {
     title: input.title,
     suggestedActions: [...input.suggestedActions],
     suggestedActionSource: 'agent',
-    planBOptionsDraft: null,
+    planBOptions: [],
     response: null,
   };
 }
@@ -4125,7 +4327,7 @@ function applyReviewSuggestions(
       ...currentTag.cases.flatMap((caseItem) => [
         caseItem.title,
         ...caseItem.suggestedActions,
-        ...(caseItem.planBOptionsDraft ?? []),
+        ...caseItem.planBOptions.map((option) => option.action),
       ]),
       ...validated.value.flatMap((caseInput) => [
         caseInput.title,
@@ -4237,7 +4439,7 @@ function applyReviewSuggestions(
         ...(caseItem.id === currentCase.id
           ? validated.value
           : caseItem.suggestedActions),
-        ...(caseItem.planBOptionsDraft ?? []),
+        ...caseItem.planBOptions.map((option) => option.action),
       ]),
     ].join('');
     if (textLength(replacementTagText) > 6000) {
@@ -5106,7 +5308,7 @@ function updateTag(
     ...located.tag.cases.flatMap((caseItem) => [
       caseItem.title,
       ...caseItem.suggestedActions,
-      ...(caseItem.planBOptionsDraft ?? []),
+      ...caseItem.planBOptions.map((option) => option.action),
     ]),
   ].join('');
   if (textLength(tagText) > 6000) {
@@ -5418,7 +5620,7 @@ function createCase(
     ...located.tag.cases.flatMap((caseItem) => [
       caseItem.title,
       ...caseItem.suggestedActions,
-      ...(caseItem.planBOptionsDraft ?? []),
+      ...caseItem.planBOptions.map((option) => option.action),
     ]),
     caseInput.title,
     ...caseInput.suggestedActions,
@@ -5521,7 +5723,7 @@ function updateCase(
       ...(caseItem.id === currentCase.id
         ? caseInput.suggestedActions
         : caseItem.suggestedActions),
-      ...(caseItem.planBOptionsDraft ?? []),
+      ...caseItem.planBOptions.map((option) => option.action),
     ]),
   ].join('');
   if (textLength(tagText) > 6000) {
@@ -5543,6 +5745,11 @@ function updateCase(
   }
   const projectVersion = state.project.version + 1;
   const itemVersion = item.version + 1;
+  const actionChanged =
+    currentCase.suggestedActions.length !== caseInput.suggestedActions.length ||
+    currentCase.suggestedActions.some(
+      (action, index) => action !== caseInput.suggestedActions[index],
+    );
   const cases = [...tag.cases];
   cases[location.caseIndex] = {
     ...currentCase,
@@ -5550,6 +5757,7 @@ function updateCase(
     title: caseInput.title,
     suggestedActions: [...caseInput.suggestedActions],
     suggestedActionSource: 'agent',
+    response: actionChanged ? null : currentCase.response,
   };
   const tags = [...item.tags];
   tags[location.tagIndex] = {
@@ -5610,17 +5818,13 @@ function setCasePlanBOptions(
   );
   if (caseVersionError) return caseVersionError;
 
-  const options =
-    command.payload.options === null
-      ? null
-      : command.payload.options.map(clean);
+  const options = command.payload.options.map(clean);
   if (
-    options !== null &&
-    (options.length > 5 ||
-      options.some(
-        (option) => textLength(option) < 1 || textLength(option) > 1200,
-      ) ||
-      textLength(options.join('')) > 4800)
+    options.length > 5 ||
+    options.some(
+      (option) => textLength(option) < 1 || textLength(option) > 1200,
+    ) ||
+    textLength(options.join('')) > 4800
   ) {
     return failure(
       'INVALID_INPUT',
@@ -5638,8 +5842,8 @@ function setCasePlanBOptions(
       caseItem.title,
       ...caseItem.suggestedActions,
       ...(caseItem.id === currentCase.id
-        ? options ?? []
-        : caseItem.planBOptionsDraft ?? []),
+        ? options
+        : caseItem.planBOptions.map((option) => option.action)),
     ]),
   ].join('');
   if (textLength(tagText) > 6000) {
@@ -5650,16 +5854,34 @@ function setCasePlanBOptions(
     );
   }
 
-  const currentOptions = currentCase.planBOptionsDraft;
+  const currentOptions = currentCase.planBOptions;
   if (
-    currentOptions === options ||
-    (currentOptions !== null &&
-      options !== null &&
-      currentOptions.length === options.length &&
-      currentOptions.every((option, index) => option === options[index]))
+    currentOptions.length === options.length &&
+    currentOptions.every((option, index) => option.action === options[index])
   ) {
     return noChanges();
   }
+
+  const planBOptions: PlanBCountermeasure[] = options.map((action, index) => {
+    const current = currentOptions[index];
+    if (!current) {
+      return {
+        id: appId('planb'),
+        version: 1,
+        source: 'agent',
+        action,
+        response: null,
+      };
+    }
+    if (current.action === action) return current;
+    return {
+      ...current,
+      version: current.version + 1,
+      source: 'agent',
+      action,
+      response: null,
+    };
+  });
 
   const projectVersion = state.project.version + 1;
   const itemVersion = item.version + 1;
@@ -5667,7 +5889,109 @@ function setCasePlanBOptions(
   cases[location.caseIndex] = {
     ...currentCase,
     version: currentCase.version + 1,
-    planBOptionsDraft: options === null ? null : [...options],
+    planBOptions,
+  };
+  const tags = [...item.tags];
+  tags[location.tagIndex] = {
+    ...tag,
+    version: tag.version + 1,
+    basedOnItemVersion: itemVersion,
+    basedOnProjectVersion: projectVersion,
+    cases,
+  };
+  const timeline = [...state.project.timeline];
+  timeline[location.itemIndex] = { ...item, version: itemVersion, tags };
+  return publish(
+    {
+      ...state,
+      undoDelete: null,
+      project: {
+        ...state.project,
+        version: projectVersion,
+        timeline,
+        activeReviewRequest: null,
+      },
+    },
+    [
+      caseId,
+      tag.id,
+      ...planBOptions.map((option) => option.id),
+      ...currentOptions
+        .slice(planBOptions.length)
+        .map((option) => option.id),
+    ],
+  );
+}
+
+function updateCaseAction(
+  command: Extract<AppCommand, { type: 'case.action.update' }>,
+): CommandResult {
+  const operation = 'case.action.update';
+  const caseId = clean(command.payload.caseId);
+  const location = caseLocation(caseId);
+  if (!location) {
+    return failure('NOT_FOUND', `${operation}: Case was not found.`, false);
+  }
+  const item = state.project.timeline[location.itemIndex];
+  const tag = item.tags[location.tagIndex];
+  if (tag.lifecycle !== 'active') {
+    return failure(
+      'INVALID_STATE',
+      `${operation}: resolved What-if history is read-only.`,
+      false,
+    );
+  }
+  const currentCase = tag.cases[location.caseIndex];
+  const validated = validateAgentCases(
+    [
+      {
+        title: currentCase.title,
+        suggestedActions: command.payload.suggestedActions,
+      },
+    ],
+    operation,
+    1,
+  );
+  if (!validated.ok) return validated.result;
+  const suggestedActions = validated.value[0].suggestedActions;
+  if (
+    currentCase.suggestedActionSource === 'human' &&
+    currentCase.suggestedActions.length === suggestedActions.length &&
+    currentCase.suggestedActions.every(
+      (action, index) => action === suggestedActions[index],
+    )
+  ) {
+    return noChanges();
+  }
+  const tagText = [
+    tag.question,
+    tag.rationale,
+    tag.summary,
+    tag.impact?.penalty ?? '',
+    ...tag.cases.flatMap((caseItem) => [
+      caseItem.title,
+      ...(caseItem.id === currentCase.id
+        ? suggestedActions
+        : caseItem.suggestedActions),
+      ...caseItem.planBOptions.map((option) => option.action),
+    ]),
+  ].join('');
+  if (textLength(tagText) > 6000) {
+    return failure(
+      'LIMIT_EXCEEDED',
+      `${operation}: What-if text has reached its limit.`,
+      false,
+    );
+  }
+  const projectVersion = state.project.version + 1;
+  const itemVersion = item.version + 1;
+  const cases = [...tag.cases];
+  cases[location.caseIndex] = {
+    ...currentCase,
+    version: currentCase.version + 1,
+    suggestedActions,
+    suggestedActionSource: 'human',
+    response: null,
   };
   const tags = [...item.tags];
   tags[location.tagIndex] = {
@@ -5691,6 +6015,141 @@ function setCasePlanBOptions(
       },
     },
     [caseId, tag.id],
+  );
+}
+
+function mutateHumanPlanB(
+  command: Extract<
+    AppCommand,
+    { type: 'case.planB.add' | 'case.planB.update' | 'case.planB.delete' }
+  >,
+): CommandResult {
+  const operation = command.type;
+  const caseId = clean(command.payload.caseId);
+  const location = caseLocation(caseId);
+  if (!location) {
+    return failure('NOT_FOUND', `${operation}: Case was not found.`, false);
+  }
+  const item = state.project.timeline[location.itemIndex];
+  const tag = item.tags[location.tagIndex];
+  if (tag.lifecycle !== 'active') {
+    return failure(
+      'INVALID_STATE',
+      `${operation}: resolved What-if history is read-only.`,
+      false,
+    );
+  }
+  const currentCase = tag.cases[location.caseIndex];
+  const planBOptions = [...currentCase.planBOptions];
+  let affectedPlanBId: string;
+
+  if (command.type === 'case.planB.add') {
+    const action = clean(command.payload.action);
+    if (textLength(action) < 1 || textLength(action) > 1200) {
+      return failure(
+        'INVALID_INPUT',
+        `${operation}: action is outside the allowed length.`,
+        true,
+      );
+    }
+    if (planBOptions.length >= 5) {
+      return failure(
+        'LIMIT_EXCEEDED',
+        `${operation}: this Situation already has five Plan B actions.`,
+        false,
+      );
+    }
+    affectedPlanBId = appId('planb');
+    planBOptions.push({
+      id: affectedPlanBId,
+      version: 1,
+      source: 'human',
+      action,
+      response: null,
+    });
+  } else {
+    const planBId = clean(command.payload.planBId);
+    const planBIndex = planBOptions.findIndex((option) => option.id === planBId);
+    if (planBIndex < 0) {
+      return failure('NOT_FOUND', `${operation}: Plan B was not found.`, false);
+    }
+    affectedPlanBId = planBId;
+    if (command.type === 'case.planB.delete') {
+      planBOptions.splice(planBIndex, 1);
+    } else {
+      const action = clean(command.payload.action);
+      if (textLength(action) < 1 || textLength(action) > 1200) {
+        return failure(
+          'INVALID_INPUT',
+          `${operation}: action is outside the allowed length.`,
+          true,
+        );
+      }
+      const current = planBOptions[planBIndex];
+      if (current.action === action && current.source === 'human') {
+        return noChanges();
+      }
+      planBOptions[planBIndex] = {
+        ...current,
+        version: current.version + 1,
+        source: 'human',
+        action,
+        response: null,
+      };
+    }
+  }
+
+  const tagText = [
+    tag.question,
+    tag.rationale,
+    tag.summary,
+    tag.impact?.penalty ?? '',
+    ...tag.cases.flatMap((caseItem) => [
+      caseItem.title,
+      ...caseItem.suggestedActions,
+      ...(caseItem.id === currentCase.id
+        ? planBOptions.map((option) => option.action)
+        : caseItem.planBOptions.map((option) => option.action)),
+    ]),
+  ].join('');
+  if (textLength(tagText) > 6000) {
+    return failure(
+      'LIMIT_EXCEEDED',
+      `${operation}: What-if text has reached its limit.`,
+      false,
+    );
+  }
+
+  const projectVersion = state.project.version + 1;
+  const itemVersion = item.version + 1;
+  const cases = [...tag.cases];
+  cases[location.caseIndex] = {
+    ...currentCase,
+    version: currentCase.version + 1,
+    planBOptions,
+  };
+  const tags = [...item.tags];
+  tags[location.tagIndex] = {
+    ...tag,
+    version: tag.version + 1,
+    basedOnItemVersion: itemVersion,
+    basedOnProjectVersion: projectVersion,
+    cases,
+  };
+  const timeline = [...state.project.timeline];
+  timeline[location.itemIndex] = { ...item, version: itemVersion, tags };
+  return publish(
+    {
+      ...state,
+      undoDelete: null,
+      project: {
+        ...state.project,
+        version: projectVersion,
+        timeline,
+        activeReviewRequest: null,
+      },
+    },
+    [caseId, tag.id, affectedPlanBId],
   );
 }
 
@@ -5917,7 +6376,11 @@ export function dispatch(raw: unknown): CommandResult {
       command.type === 'tags.sortByImpact' ||
       command.type === 'case.create' ||
       command.type === 'case.update' ||
+      command.type === 'case.action.update' ||
       command.type === 'case.planBOptions.set' ||
+      command.type === 'case.planB.add' ||
+      command.type === 'case.planB.update' ||
+      command.type === 'case.planB.delete' ||
       command.type === 'case.delete' ||
       (command.type === 'timeline.add' && command.payload.requestReview) ||
       (command.type === 'tag.add' && command.payload.requestReview) ||
@@ -6412,7 +6875,7 @@ export function dispatch(raw: unknown): CommandResult {
           title: caseTitle,
           suggestedActions: ownAction ? [ownAction] : [],
           suggestedActionSource: ownAction ? 'human' : null,
-          planBOptionsDraft: null,
+          planBOptions: [],
           response: null,
         },
       ],
@@ -6448,8 +6911,18 @@ export function dispatch(raw: unknown): CommandResult {
   if (command.type === 'case.update') {
     return updateCase(command);
   }
+  if (command.type === 'case.action.update') {
+    return updateCaseAction(command);
+  }
   if (command.type === 'case.planBOptions.set') {
     return setCasePlanBOptions(command);
+  }
+  if (
+    command.type === 'case.planB.add' ||
+    command.type === 'case.planB.update' ||
+    command.type === 'case.planB.delete'
+  ) {
+    return mutateHumanPlanB(command);
   }
   if (command.type === 'case.delete') {
     return deleteCase(command);
@@ -6527,7 +7000,7 @@ export function dispatch(raw: unknown): CommandResult {
       title,
       suggestedActions: ownAction ? [ownAction] : [],
       suggestedActionSource: ownAction ? 'human' : null,
-      planBOptionsDraft: null,
+      planBOptions: [],
       response: null,
     };
     const updatedTag: MoshimoTag = {
@@ -6566,6 +7039,10 @@ export function dispatch(raw: unknown): CommandResult {
     const caseId = clean(command.payload.caseId);
     const actions = command.payload.actions.map(clean);
     const when = clean(command.payload.when);
+    const planBId =
+      command.payload.planBId === null
+        ? null
+        : clean(command.payload.planBId);
     const { disposition, status } = command.payload;
     if (
       actions.some(
@@ -6587,8 +7064,7 @@ export function dispatch(raw: unknown): CommandResult {
     const hasValidShape =
       (zeroActionDisposition && actions.length === 0) ||
       (optionalMemoDisposition && actions.length <= 1) ||
-      (oneActionDisposition && actions.length === 1) ||
-      (disposition === 'plan_b' && actions.length >= 1 && actions.length <= 5);
+      (oneActionDisposition && actions.length === 1);
     const hasValidPreparationFields =
       disposition === 'prepare'
         ? status === null || isPreparationStatus(status)
@@ -6636,28 +7112,57 @@ export function dispatch(raw: unknown): CommandResult {
       );
     }
     const currentCase = currentTag.cases[caseIndex];
+    const planBIndex =
+      planBId === null
+        ? -1
+        : currentCase.planBOptions.findIndex(
+            (option) => option.id === planBId,
+          );
+    if (planBId !== null && planBIndex < 0) {
+      return failure(
+        'NOT_FOUND',
+        'case.response.save: Plan B was not found.',
+        false,
+      );
+    }
     const response: CaseResponse = { disposition, actions, when, status };
+    const currentResponse =
+      planBIndex >= 0
+        ? currentCase.planBOptions[planBIndex].response
+        : currentCase.response;
     if (
-      currentCase.response?.disposition === response.disposition &&
-      currentCase.response.when === response.when &&
-      currentCase.response.status === response.status &&
-      currentCase.response.actions.length === response.actions.length &&
-      currentCase.response.actions.every(
+      currentResponse?.disposition === response.disposition &&
+      currentResponse.when === response.when &&
+      currentResponse.status === response.status &&
+      currentResponse.actions.length === response.actions.length &&
+      currentResponse.actions.every(
         (action, index) => action === response.actions[index],
-      ) &&
-      (disposition !== 'plan_b' || currentCase.planBOptionsDraft === null)
+      )
     ) {
       return noChanges();
     }
 
     const cases = [...currentTag.cases];
-    cases[caseIndex] = {
-      ...currentCase,
-      version: currentCase.version + 1,
-      planBOptionsDraft:
-        disposition === 'plan_b' ? null : currentCase.planBOptionsDraft,
-      response,
-    };
+    if (planBIndex >= 0) {
+      const planBOptions = [...currentCase.planBOptions];
+      const currentPlanB = planBOptions[planBIndex];
+      planBOptions[planBIndex] = {
+        ...currentPlanB,
+        version: currentPlanB.version + 1,
+        response,
+      };
+      cases[caseIndex] = {
+        ...currentCase,
+        version: currentCase.version + 1,
+        planBOptions,
+      };
+    } else {
+      cases[caseIndex] = {
+        ...currentCase,
+        version: currentCase.version + 1,
+        response,
+      };
+    }
     const tags = [...currentItem.tags];
     tags[tagIndex] = { ...currentTag, cases };
     const timeline = [...state.project.timeline];
@@ -6673,7 +7178,7 @@ export function dispatch(raw: unknown): CommandResult {
           activeReviewRequest: null,
         },
       },
-      [caseId],
+      planBId === null ? [caseId] : [caseId, planBId],
     );
   }
 
@@ -6843,7 +7348,7 @@ export function dispatch(raw: unknown): CommandResult {
             title: caseInput.title,
             suggestedActions: [...caseInput.suggestedActions],
             suggestedActionSource: 'agent',
-            planBOptionsDraft: null,
+            planBOptions: [],
             response: null,
           };
         });

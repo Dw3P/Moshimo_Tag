@@ -20,12 +20,14 @@ import {
   resetPersistence,
   subscribe,
   type CaseDisposition,
+  type CaseResponse,
   type CommandResult,
   type ImpactRank,
   type MoshimoCase,
   type MoshimoTag,
   type PersistenceResult,
   type PlanGapSuggestion,
+  type PlanBCountermeasure,
   type PreparationStatus,
   type ProjectState,
   type ReviewKind,
@@ -47,23 +49,21 @@ const dispositionLabels: Record<CaseDisposition, string> = {
   covered: 'Already covered',
   accept: 'Accept risk',
   prepare: 'Prepare',
-  plan_b: 'Plan B',
   dismiss: 'Dismiss',
 };
 
 const dispositionDescriptions: Record<CaseDisposition, string> = {
   covered: 'The main Plan already handles this Situation.',
   accept: 'Continue without adding a preventive action.',
-  prepare: 'Create one action to prepare ahead.',
-  plan_b: 'Choose one or more alternative options.',
-  dismiss: 'Remove this Situation from the current Final plan.',
+  prepare: 'Add what must be ready before carrying out this countermeasure.',
+  dismiss: 'Do not use this countermeasure in the Final plan.',
 };
 
 type ReviewActivityState = 'waiting' | 'reviewing' | 'saving';
 
 type EditableCaseDisposition = Extract<
   CaseDisposition,
-  'covered' | 'accept' | 'prepare' | 'plan_b'
+  'covered' | 'accept' | 'prepare'
 >;
 
 interface CaseResponseDraft {
@@ -73,7 +73,7 @@ interface CaseResponseDraft {
 }
 
 const AGENT_EXAMPLE_REQUEST =
-  'On this open Moshimo Tag page, use WebMCP to create a Project for [what you want to plan — e.g. baking a baguette]. Add the expected Plan, likely What ifs, situations, and sensible response candidates. Leave every decision undecided for me to review.';
+  'On this open Moshimo Tag page, use WebMCP to create a Project for [what you want to plan — e.g. baking a baguette]. Add the expected Plan, likely What ifs, Situations, main countermeasures, and useful Plan B countermeasures. Unless I name other people, write every action for the Project owner to carry out alone. Leave every decision undecided for me to review.';
 
 function normalizeReviewActivity(value: unknown): ReviewActivityState {
   const activity =
@@ -201,7 +201,6 @@ const dispositionIconNames: Record<CaseDisposition, InterfaceIconName> = {
   covered: 'verified-user',
   accept: 'check-circle-outline',
   prepare: 'schedule',
-  plan_b: 'call-split',
   dismiss: 'close',
 };
 
@@ -739,9 +738,9 @@ function EmptyWorkspace({
                 <figure className="tutorial-shot tutorial-shot-what-if">
                   <Image
                     alt="Two real What ifs connected to one Plan item"
-                    height={165}
+                    height={160}
                     src="/tutorial/steps/02-what-ifs.jpg"
-                    width={740}
+                    width={730}
                   />
                 </figure>
               </li>
@@ -752,10 +751,10 @@ function EmptyWorkspace({
                 </p>
                 <figure className="tutorial-shot tutorial-shot-case">
                   <Image
-                    alt="One expanded What if with its situations and response choices"
-                    height={390}
+                    alt="One expanded What if with an Action, Plan B, and response choices"
+                    height={653}
                     src="/tutorial/steps/03-situation-response.png"
-                    width={697}
+                    width={730}
                   />
                 </figure>
               </li>
@@ -766,10 +765,10 @@ function EmptyWorkspace({
                 </p>
                 <figure className="tutorial-shot tutorial-shot-final">
                   <Image
-                    alt="A real Final view where one Plan branches to two selected What if responses"
-                    height={571}
+                    alt="A real Final view where one Plan branches to selected Actions and Plan B"
+                    height={1050}
                     src="/tutorial/steps/04-final-view.jpg"
-                    width={1265}
+                    width={1280}
                   />
                 </figure>
               </li>
@@ -873,92 +872,36 @@ function EmptyWorkspace({
   );
 }
 
-function CaseCard({
-  caseItem,
-  index,
-  isOnlyCase,
-  aiRequestBlocked,
+function CountermeasureCard({
+  caseId,
+  situationTitle,
+  planBId,
+  label,
+  actions,
+  source,
+  response,
   onDelete,
   onFeedback,
-  onRequestReview,
 }: {
-  caseItem: MoshimoCase;
-  index: number;
-  isOnlyCase: boolean;
-  aiRequestBlocked: boolean;
-  onDelete: () => void;
+  caseId: string;
+  situationTitle: string;
+  planBId: string | null;
+  label: string;
+  actions: string[];
+  source: PlanBCountermeasure['source'] | null;
+  response: CaseResponse | null;
+  onDelete?: () => void;
   onFeedback: (result: CommandResult, successMessage: string) => boolean;
-  onRequestReview: (kind: ReviewKind, ownerId: string) => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editingDecision, setEditingDecision] = useState(false);
   const [draftDisposition, setDraftDisposition] =
     useState<EditableCaseDisposition | null>(null);
-  const [drafts, setDrafts] = useState<
-    Partial<Record<EditableCaseDisposition, CaseResponseDraft>>
-  >({});
+  const [draft, setDraft] = useState<CaseResponseDraft | null>(null);
+  const [editingAction, setEditingAction] = useState(false);
+  const [actionDraft, setActionDraft] = useState(actions.join('\n\n'));
   const choiceGroupRef = useRef<HTMLDivElement>(null);
   const editResponseRef = useRef<HTMLButtonElement>(null);
   const focusAfterRender = useRef<'choices' | 'saved' | null>(null);
-
-  function initialDraft(
-    disposition: EditableCaseDisposition,
-    preferPlanBDraft = false,
-  ): CaseResponseDraft {
-    const existing =
-      !preferPlanBDraft && caseItem.response?.disposition === disposition
-        ? caseItem.response
-        : null;
-    const suggested = caseItem.suggestedActionSource
-      ? caseItem.suggestedActions
-      : [];
-    const isOptionalMemo = disposition === 'covered' || disposition === 'accept';
-    const actions = existing
-      ? isOptionalMemo && existing.actions.length === 0
-        ? ['']
-        : [...existing.actions]
-      : disposition === 'plan_b'
-        ? caseItem.planBOptionsDraft !== null
-          ? caseItem.planBOptionsDraft.length
-            ? [...caseItem.planBOptionsDraft]
-            : ['']
-          : suggested.length
-            ? suggested.slice(0, 5)
-            : ['']
-        : isOptionalMemo
-          ? ['']
-          : [suggested[0] ?? ''];
-    return {
-      actions,
-      when: existing?.when ?? '',
-      status: existing?.status ?? 'pending',
-    };
-  }
-
-  function beginDisposition(
-    disposition: EditableCaseDisposition,
-    preferPlanBDraft = false,
-  ) {
-    setDrafts((current) =>
-      current[disposition] && !preferPlanBDraft
-        ? current
-        : {
-            ...current,
-            [disposition]: initialDraft(disposition, preferPlanBDraft),
-          },
-    );
-    setDraftDisposition(disposition);
-    setEditing(true);
-  }
-
-  function closeEditor(
-    nextFocus: 'choices' | 'saved' | null = null,
-    discardDrafts = false,
-  ) {
-    focusAfterRender.current = nextFocus;
-    setEditing(false);
-    setDraftDisposition(null);
-    if (discardDrafts) setDrafts({});
-  }
 
   useEffect(() => {
     if (focusAfterRender.current === 'saved') {
@@ -967,26 +910,49 @@ function CaseCard({
       choiceGroupRef.current?.querySelector('button')?.focus();
     }
     focusAfterRender.current = null;
-  }, [draftDisposition, editing, caseItem.response]);
+  }, [draftDisposition, editingDecision, response]);
+
+  function initialDraft(disposition: EditableCaseDisposition): CaseResponseDraft {
+    const existing = response?.disposition === disposition ? response : null;
+    const optionalMemo = disposition === 'covered' || disposition === 'accept';
+    return {
+      actions: existing
+        ? optionalMemo && existing.actions.length === 0
+          ? ['']
+          : [...existing.actions]
+        : [''],
+      when: existing?.when ?? '',
+      status: existing?.status ?? 'pending',
+    };
+  }
+
+  function beginDisposition(disposition: EditableCaseDisposition) {
+    setDraftDisposition(disposition);
+    setDraft(initialDraft(disposition));
+    setEditingDecision(true);
+  }
+
+  function closeDecision(nextFocus: 'choices' | 'saved' | null = null) {
+    focusAfterRender.current = nextFocus;
+    setEditingDecision(false);
+    setDraftDisposition(null);
+    setDraft(null);
+  }
 
   function saveDismissedDecision() {
     const result = dispatch({
       type: 'case.response.save',
       payload: {
-        caseId: caseItem.id,
+        caseId,
+        planBId,
         disposition: 'dismiss',
         actions: [],
         when: '',
         status: null,
       },
     });
-    if (
-      onFeedback(
-        result,
-        `${dispositionLabels.dismiss} saved for ${caseItem.title}.`,
-      )
-    ) {
-      closeEditor('saved');
+    if (onFeedback(result, `${label} dismissed for ${situationTitle}.`)) {
+      closeDecision('saved');
     }
   }
 
@@ -999,11 +965,11 @@ function CaseCard({
   }
 
   function editSavedResponse() {
-    const response = caseItem.response;
     if (!response) return;
     if (response.disposition === 'dismiss') {
-      setEditing(true);
+      setEditingDecision(true);
       setDraftDisposition(null);
+      setDraft(null);
       return;
     }
     beginDisposition(response.disposition);
@@ -1011,213 +977,173 @@ function CaseCard({
 
   function saveResponse(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!draftDisposition || !drafts[draftDisposition]) {
-      return;
-    }
-    const draft = drafts[draftDisposition];
+    if (!draftDisposition || !draft) return;
+    const optionalMemo = draft.actions[0]?.trim() ?? '';
     const isOptionalMemo =
       draftDisposition === 'covered' || draftDisposition === 'accept';
-    const optionalMemo = draft.actions[0]?.trim() ?? '';
     const result = dispatch({
       type: 'case.response.save',
       payload: {
-        caseId: caseItem.id,
+        caseId,
+        planBId,
         disposition: draftDisposition,
         actions: isOptionalMemo
           ? optionalMemo
             ? [optionalMemo]
             : []
-          : draft.actions,
-        when: draftDisposition === 'prepare' ? draft.when : '',
+          : [optionalMemo],
+        when: draftDisposition === 'prepare' ? draft.when.trim() : '',
         status: draftDisposition === 'prepare' ? draft.status : null,
       },
     });
-    if (onFeedback(result, `Response saved for ${caseItem.title}.`)) {
-      setDrafts((current) => {
-        const next = { ...current };
-        delete next[draftDisposition];
-        return next;
-      });
-      closeEditor('saved');
+    if (onFeedback(result, `${label} response saved for ${situationTitle}.`)) {
+      closeDecision('saved');
     }
   }
 
-  function updateAction(actionIndex: number, value: string) {
-    if (!draftDisposition) return;
-    setDrafts((current) => {
-      const draft = current[draftDisposition] ?? initialDraft(draftDisposition);
-      return {
-        ...current,
-        [draftDisposition]: {
-          ...draft,
-          actions: draft.actions.map((action, index) =>
-            index === actionIndex ? value : action,
-          ),
-        },
-      };
-    });
+  function saveAction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const value = actionDraft.trim();
+    const result = planBId
+      ? dispatch({
+          type: 'case.planB.update',
+          payload: { caseId, planBId, action: value },
+        })
+      : dispatch({
+          type: 'case.action.update',
+          payload: {
+            caseId,
+            suggestedActions: value
+              .split(/\n\s*\n/u)
+              .map((action) => action.trim())
+              .filter(Boolean),
+          },
+        });
+    if (onFeedback(result, `${label} updated for ${situationTitle}.`)) {
+      setEditingAction(false);
+    }
   }
 
-  function removeAction(actionIndex: number) {
-    if (!draftDisposition) return;
-    setDrafts((current) => {
-      const draft = current[draftDisposition] ?? initialDraft(draftDisposition);
-      return {
-        ...current,
-        [draftDisposition]: {
-          ...draft,
-          actions: draft.actions.filter((_, index) => index !== actionIndex),
-        },
-      };
-    });
-  }
-
-  const response = caseItem.response;
-  const activeDraft = draftDisposition
-    ? drafts[draftDisposition] ?? initialDraft(draftDisposition)
-    : null;
-  const suggestedActionSource = caseItem.suggestedActionSource;
-  const suggestedActions = suggestedActionSource
-    ? caseItem.suggestedActions
-    : [];
-  const showChoices = response === null || editing;
-  const showActionEditor =
-    editing &&
-    (draftDisposition === 'covered' ||
-      draftDisposition === 'accept' ||
-      draftDisposition === 'prepare' ||
-      draftDisposition === 'plan_b');
-  const deleteActionTitle = isOnlyCase
-    ? 'Delete Situation and this What if'
-    : 'Delete Situation';
+  const showChoices = response === null || editingDecision;
+  const isOptionalMemo =
+    draftDisposition === 'covered' || draftDisposition === 'accept';
 
   return (
-    <article
-      aria-labelledby={`case-heading-${caseItem.id}`}
-      className="case-card"
+    <section
+      aria-label={`${label} for ${situationTitle}`}
+      className={`countermeasure-card ${planBId ? 'is-plan-b' : 'is-main'}`}
     >
-      <div className="case-heading">
-        <span>Situation {index + 1}</span>
-        <h4 id={`case-heading-${caseItem.id}`}>{caseItem.title}</h4>
-        <div className="case-heading-controls">
-          <span className={`case-status ${response ? 'is-decided' : ''}`}>
-            {response
-              ? `✓ ${dispositionLabels[response.disposition]}`
-              : '! Undecided'}
-          </span>
+      <header className="countermeasure-heading">
+        <span className="countermeasure-kicker">{label}</span>
+        <div className="countermeasure-tools">
+          {!response ? <span className="case-status">! Undecided</span> : null}
           <button
-            aria-label={`Delete Situation ${caseItem.title}`}
-            className="inline-delete-action"
-            title={deleteActionTitle}
+            aria-label={`Edit ${label} for ${situationTitle}`}
+            className="countermeasure-edit-action"
             type="button"
-            onClick={onDelete}
+            onClick={() => {
+              setActionDraft(actions.join('\n\n'));
+              setEditingAction(true);
+            }}
           >
-            <InterfaceIcon className="delete-action-icon" name="delete" />
+            Edit action
           </button>
-        </div>
-      </div>
-
-      {suggestedActionSource && suggestedActions.length ? (
-        <SuggestedActionBlock
-          actions={suggestedActions}
-          source={suggestedActionSource}
-        />
-      ) : null}
-      {suggestedActions.length === 0 ? (
-        <div className="empty-case-action">
-          <span>No action added yet.</span>
-          {LEGACY_AI_UI_ENABLED ? (
+          {onDelete ? (
             <button
-              aria-label={`Ask AI for actions for ${caseItem.title}`}
-              disabled={aiRequestBlocked}
+              aria-label={`Delete ${label} for ${situationTitle}`}
+              className="inline-delete-action"
+              title={`Delete ${label}`}
               type="button"
-              onClick={() => onRequestReview('case_actions', caseItem.id)}
+              onClick={onDelete}
             >
-              Ask AI for actions
+              <InterfaceIcon className="delete-action-icon" name="delete" />
             </button>
           ) : null}
         </div>
-      ) : null}
+      </header>
 
-      {caseItem.planBOptionsDraft !== null &&
-      !(editing && draftDisposition === 'plan_b') ? (
-        <section
-          aria-label={`Plan B draft for ${caseItem.title}`}
-          className="plan-b-draft-notice"
-        >
-          <div>
-            <span>Agent-prepared · not saved</span>
-            <strong>
-              {caseItem.planBOptionsDraft.length === 0
-                ? 'Empty Plan B draft'
-                : `${caseItem.planBOptionsDraft.length} Plan B ${
-                    caseItem.planBOptionsDraft.length === 1
-                      ? 'option'
-                      : 'options'
-                  } ready`}
-            </strong>
-          </div>
-          <button
-            aria-label={`Review agent-prepared Plan B draft for ${caseItem.title}. This does not save a response.`}
-            type="button"
-            onClick={() => beginDisposition('plan_b', true)}
-          >
-            Review Plan B
-          </button>
-        </section>
-      ) : null}
-
-      {response && !editing ? (
-        <section
-          className="saved-case-response"
-          aria-label={`Saved response for ${caseItem.title}`}
-        >
-          {response.disposition === 'covered' ? (
-            <div className="saved-decision-summary">
-              <strong>Handled in the main Plan</strong>
-              {response.actions[0] ? (
-                <p>
-                  <span>Memo</span>
-                  {response.actions[0]}
-                </p>
-              ) : (
-                <p>No memo added.</p>
-              )}
-            </div>
-          ) : response.disposition === 'accept' ? (
-            <div className="saved-decision-summary">
-              <strong>Risk accepted</strong>
-              {response.actions[0] ? (
-                <p>
-                  <span>Memo</span>
-                  {response.actions[0]}
-                </p>
-              ) : (
-                <p>No additional action planned.</p>
-              )}
-            </div>
-          ) : response.disposition === 'plan_b' ? (
-            <ol className="saved-plan-b-options">
-              {response.actions.map((action, actionIndex) => (
-                <li key={`${action}-${actionIndex}`}>
-                  <span>Option {actionIndex + 1}</span>
-                  <p>{action}</p>
-                </li>
-              ))}
-            </ol>
-          ) : response.disposition === 'prepare' ? (
-            <p>{response.actions[0]}</p>
-          ) : (
-            <p>This situation will not appear in the final view.</p>
-          )}
-          {response.disposition === 'prepare' ? (
-            <p className="preparation-meta">
-              {response.when ? `When: ${response.when} · ` : ''}
-              Status: {response.status ?? 'pending'}
-            </p>
+      {editingAction ? (
+        <form className="countermeasure-edit-form" onSubmit={saveAction}>
+          <label>
+            {label}
+            <textarea
+              autoFocus
+              maxLength={planBId ? 1200 : 4800}
+              required
+              rows={3}
+              value={actionDraft}
+              onChange={(event) => setActionDraft(event.currentTarget.value)}
+            />
+          </label>
+          {!planBId ? (
+            <p>Separate multiple steps with a blank line.</p>
           ) : null}
+          <div className="form-actions">
+            <button
+              type="button"
+              onClick={() => {
+                setActionDraft(actions.join('\n\n'));
+                setEditingAction(false);
+              }}
+            >
+              Cancel
+            </button>
+            <button className="primary-action" type="submit">
+              Save action
+            </button>
+          </div>
+        </form>
+      ) : source && actions.length ? (
+        <SuggestedActionBlock actions={actions} source={source} />
+      ) : (
+        <div className="empty-case-action">No countermeasure added yet.</div>
+      )}
+
+      {response && !editingDecision ? (
+        <section
+          aria-label={`Saved response for ${label}`}
+          className="saved-case-response"
+        >
+          <div className="saved-response-copy">
+            {response.disposition === 'covered' ? (
+              <div className="saved-decision-summary">
+                <strong>This countermeasure is already in place.</strong>
+                <p>
+                  {response.actions[0] ? (
+                    <><span>Memo</span>{response.actions[0]}</>
+                  ) : (
+                    'No memo added.'
+                  )}
+                </p>
+              </div>
+            ) : response.disposition === 'accept' ? (
+              <div className="saved-decision-summary">
+                <strong>Risk accepted without using this countermeasure.</strong>
+                <p>
+                  {response.actions[0] ? (
+                    <><span>Memo</span>{response.actions[0]}</>
+                  ) : (
+                    'No memo added.'
+                  )}
+                </p>
+              </div>
+            ) : response.disposition === 'prepare' ? (
+              <>
+                <p>{response.actions[0]}</p>
+                <p className="preparation-meta">
+                  {response.when ? `When: ${response.when} · ` : ''}
+                  Status: {response.status ?? 'pending'}
+                </p>
+              </>
+            ) : (
+              <p>This countermeasure will not appear in the Final plan.</p>
+            )}
+          </div>
+          <span className="case-status is-decided saved-response-status">
+            ✓ {dispositionLabels[response.disposition]}
+          </span>
           <button
-            aria-label={`Edit response for ${caseItem.title}`}
+            aria-label={`Edit response for ${label} in ${situationTitle}`}
             ref={editResponseRef}
             type="button"
             onClick={editSavedResponse}
@@ -1229,15 +1155,15 @@ function CaseCard({
 
       {showChoices ? (
         <div
+          aria-label={`Human decision only: response choices for ${label} in ${situationTitle}. Agents must leave this countermeasure undecided.`}
           className="case-choice-group"
           ref={choiceGroupRef}
           role="group"
-          aria-label={`Human decision only: response choices for ${caseItem.title}. Agents must leave this Situation undecided.`}
         >
           {(Object.keys(dispositionLabels) as CaseDisposition[]).map(
             (disposition) => (
               <button
-                aria-label={`Human decision only: ${dispositionLabels[disposition]} for ${caseItem.title}. ${dispositionDescriptions[disposition]}`}
+                aria-label={`Human decision only: ${dispositionLabels[disposition]} for ${label}. ${dispositionDescriptions[disposition]}`}
                 aria-pressed={draftDisposition === disposition}
                 className={
                   draftDisposition === disposition ? 'is-selected' : undefined
@@ -1258,9 +1184,9 @@ function CaseCard({
         </div>
       ) : null}
 
-      {showActionEditor ? (
+      {editingDecision && draftDisposition && draft ? (
         <form
-          aria-label={`Human decision editor for ${caseItem.title}. Agents must not submit this response.`}
+          aria-label={`Human decision editor for ${label}. Agents must not submit this response.`}
           className="case-response-editor"
           onSubmit={saveResponse}
         >
@@ -1271,122 +1197,49 @@ function CaseCard({
               </p>
               <strong>
                 {draftDisposition === 'covered'
-                  ? 'Record how this is already handled'
+                  ? 'Record how this countermeasure is already covered'
                   : draftDisposition === 'accept'
-                    ? 'Accept this Situation without a preventive action'
-                    : draftDisposition === 'plan_b'
-                      ? 'Write one or more options for this Situation'
-                      : 'Write the action you want to own'}
+                    ? 'Accept the risk without using this countermeasure'
+                    : 'Write what must be ready before this countermeasure can work'}
               </strong>
-              {draftDisposition === 'covered' ||
-              draftDisposition === 'accept' ? (
-                <p className="response-editor-guidance">
-                  {draftDisposition === 'covered'
-                    ? 'Add a memo if it helps identify the existing coverage.'
-                    : 'Add a memo if it helps explain the decision.'}{' '}
-                  This is optional.
-                </p>
-              ) : null}
+              <p className="response-editor-guidance">
+                {isOptionalMemo
+                  ? 'Add a memo only if it helps explain the decision. This is optional.'
+                  : 'Prepare is not the countermeasure itself. Record the prerequisite or setup needed to carry it out.'}
+              </p>
             </div>
-            <span className="human-label">
-              {draftDisposition === 'plan_b' &&
-              caseItem.planBOptionsDraft !== null
-                ? 'Agent draft · not saved'
-                : 'Human decision · not saved'}
-            </span>
+            <span className="human-label">Human decision · not saved</span>
           </div>
 
-          {activeDraft?.actions.map((action, actionIndex) => (
-            <div className="response-action-field" key={actionIndex}>
-              <label>
-                <span className="response-field-title">
-                  {draftDisposition === 'covered' ||
-                  draftDisposition === 'accept'
-                    ? 'Memo'
-                    : draftDisposition === 'plan_b'
-                      ? `Plan B option ${actionIndex + 1}`
-                      : 'Your action'}
-                  {draftDisposition === 'covered' ||
-                  draftDisposition === 'accept' ? (
-                    <span>(optional)</span>
-                  ) : null}
-                </span>
-                <textarea
-                  aria-label={`${
-                    draftDisposition === 'covered' ||
-                    draftDisposition === 'accept'
-                      ? 'Optional memo'
-                      : draftDisposition === 'plan_b'
-                        ? `Plan B option ${actionIndex + 1}`
-                        : 'Your action'
-                  } for ${caseItem.title}`}
-                  autoFocus={actionIndex === 0}
-                  maxLength={1200}
-                  placeholder={
-                    draftDisposition === 'covered'
-                      ? 'e.g. The main Plan already includes a backup batch.'
-                      : draftDisposition === 'accept'
-                        ? 'e.g. Continue as an experiment and accept the result.'
-                        : undefined
-                  }
-                  required={
-                    draftDisposition !== 'covered' &&
-                    draftDisposition !== 'accept'
-                  }
-                  rows={3}
-                  value={action}
-                  onChange={(event) =>
-                    updateAction(actionIndex, event.currentTarget.value)
-                  }
-                />
-              </label>
-              {draftDisposition === 'plan_b' &&
-              (activeDraft?.actions.length ?? 0) > 1 ? (
-                <button
-                  aria-label={`Remove Plan B option ${actionIndex + 1} for ${caseItem.title}`}
-                  type="button"
-                  onClick={() => removeAction(actionIndex)}
-                >
-                  Remove option
-                </button>
-              ) : null}
-            </div>
-          ))}
-
-          {draftDisposition === 'plan_b' ? (
-            <div className="plan-b-actions">
-              <button
-                disabled={(activeDraft?.actions.length ?? 0) >= 5}
-                type="button"
-                onClick={() => {
-                  if (!draftDisposition) return;
-                  setDrafts((current) => {
-                    const draft =
-                      current[draftDisposition] ?? initialDraft(draftDisposition);
-                    return {
-                      ...current,
-                      [draftDisposition]: {
-                        ...draft,
-                        actions: [...draft.actions, ''],
-                      },
-                    };
-                  });
-                }}
-              >
-                + Add option
-              </button>
-              {LEGACY_AI_UI_ENABLED ? (
-                <button
-                  aria-label={`Ask AI for more options for ${caseItem.title}`}
-                  disabled={aiRequestBlocked}
-                  type="button"
-                  onClick={() => onRequestReview('case_actions', caseItem.id)}
-                >
-                  Ask AI for more options
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+          <div className="response-action-field">
+            <label>
+              <span className="response-field-title">
+                {isOptionalMemo ? 'Memo' : 'Preparation action'}
+                {isOptionalMemo ? <span>(optional)</span> : null}
+              </span>
+              <textarea
+                aria-label={`${isOptionalMemo ? 'Optional memo' : 'Preparation action'} for ${label}`}
+                autoFocus
+                maxLength={1200}
+                placeholder={
+                  draftDisposition === 'covered'
+                    ? 'e.g. This is already included in the checklist.'
+                    : draftDisposition === 'accept'
+                      ? 'e.g. Continue as an experiment and accept the outcome.'
+                      : 'e.g. Put the backup equipment by the workspace.'
+                }
+                required={!isOptionalMemo}
+                rows={3}
+                value={draft.actions[0] ?? ''}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    actions: [event.currentTarget.value],
+                  })
+                }
+              />
+            </label>
+          </div>
 
           {draftDisposition === 'prepare' ? (
             <div className="preparation-fields">
@@ -1395,57 +1248,39 @@ function CaseCard({
                 <input
                   maxLength={120}
                   placeholder="e.g. Before leaving"
-                  value={activeDraft?.when ?? ''}
-                  onChange={(event) => {
-                    if (!draftDisposition) return;
-                    const when = event.currentTarget.value;
-                    setDrafts((current) => {
-                      const draft =
-                        current[draftDisposition] ?? initialDraft(draftDisposition);
-                      return {
-                        ...current,
-                        [draftDisposition]: { ...draft, when },
-                      };
-                    });
-                  }}
+                  value={draft.when}
+                  onChange={(event) =>
+                    setDraft({ ...draft, when: event.currentTarget.value })
+                  }
                 />
               </label>
               <label>
                 Status
                 <select
-                  value={activeDraft?.status ?? 'pending'}
-                  onChange={(event) => {
-                    if (!draftDisposition) return;
-                    const status = event.currentTarget.value as PreparationStatus;
-                    setDrafts((current) => {
-                      const draft =
-                        current[draftDisposition] ?? initialDraft(draftDisposition);
-                      return {
-                        ...current,
-                        [draftDisposition]: { ...draft, status },
-                      };
-                    });
-                  }}
+                  value={draft.status}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      status: event.currentTarget.value as PreparationStatus,
+                    })
+                  }
                 >
                   <option value="pending">Pending</option>
                   <option value="done">Done</option>
                 </select>
               </label>
-              <p>No reminder has been scheduled. Notification delivery is future work.</p>
             </div>
           ) : null}
 
           <div className="form-actions">
             <button
               type="button"
-              onClick={() =>
-                closeEditor(response ? 'saved' : 'choices', true)
-              }
+              onClick={() => closeDecision(response ? 'saved' : 'choices')}
             >
               Cancel
             </button>
             <button
-              aria-label={`Human decision only: Save response for ${caseItem.title}`}
+              aria-label={`Human decision only: Save response for ${label}`}
               className="primary-action"
               type="submit"
             >
@@ -1455,13 +1290,176 @@ function CaseCard({
         </form>
       ) : null}
 
-      {editing && !showActionEditor && response ? (
+      {editingDecision && !draftDisposition && response ? (
         <button
           className="cancel-response-edit"
           type="button"
-          onClick={() => closeEditor('saved', true)}
+          onClick={() => closeDecision('saved')}
         >
           Cancel editing
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+function CaseCard({
+  caseItem,
+  index,
+  isOnlyCase,
+  aiRequestBlocked,
+  onDelete,
+  onFeedback,
+  onRequestReview,
+}: {
+  caseItem: MoshimoCase;
+  index: number;
+  isOnlyCase: boolean;
+  aiRequestBlocked: boolean;
+  onDelete: () => void;
+  onFeedback: (result: CommandResult, successMessage: string) => boolean;
+  onRequestReview: (kind: ReviewKind, ownerId: string) => void;
+}) {
+  const [addingPlanB, setAddingPlanB] = useState(false);
+  const responses = [
+    caseItem.response,
+    ...caseItem.planBOptions.map((option) => option.response),
+  ];
+  const undecidedCount = responses.filter((response) => response === null).length;
+  const deleteActionTitle = isOnlyCase
+    ? 'Delete Situation and this What if'
+    : 'Delete Situation';
+
+  function addPlanB(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const action = String(new FormData(form).get('action') ?? '').trim();
+    const result = dispatch({
+      type: 'case.planB.add',
+      payload: { caseId: caseItem.id, action },
+    });
+    if (onFeedback(result, `Plan B added for ${caseItem.title}.`)) {
+      form.reset();
+      setAddingPlanB(false);
+    }
+  }
+
+  return (
+    <article
+      aria-labelledby={`case-heading-${caseItem.id}`}
+      className="case-card"
+    >
+      <div className="case-heading">
+        <div className="case-heading-meta">
+          <span>Situation {index + 1}</span>
+          <span className={`case-status ${undecidedCount === 0 ? 'is-decided' : ''}`}>
+            {undecidedCount
+              ? `! ${undecidedCount} undecided`
+              : '✓ All decided'}
+          </span>
+        </div>
+        <h4 id={`case-heading-${caseItem.id}`}>{caseItem.title}</h4>
+        <div className="case-heading-controls">
+          <button
+            aria-label={`Add Plan B for ${caseItem.title}`}
+            className="case-add-plan-b-action"
+            disabled={addingPlanB || caseItem.planBOptions.length >= 5}
+            type="button"
+            onClick={() => setAddingPlanB(true)}
+          >
+            <InterfaceIcon className="case-choice-icon" name="call-split" />
+            <span>+ Plan B</span>
+          </button>
+          <button
+            aria-label={`Delete Situation ${caseItem.title}`}
+            className="inline-delete-action"
+            title={deleteActionTitle}
+            type="button"
+            onClick={onDelete}
+          >
+            <InterfaceIcon className="delete-action-icon" name="delete" />
+          </button>
+        </div>
+      </div>
+
+      <div
+        className={`countermeasure-stack ${caseItem.planBOptions.length ? 'has-plan-b' : ''}`}
+      >
+        <CountermeasureCard
+          actions={caseItem.suggestedActions}
+          caseId={caseItem.id}
+          label="Action"
+          onFeedback={onFeedback}
+          planBId={null}
+          response={caseItem.response}
+          situationTitle={caseItem.title}
+          source={caseItem.suggestedActionSource}
+        />
+
+        {caseItem.planBOptions.length ? (
+          <div className="plan-b-branch">
+            {caseItem.planBOptions.map((option, planBIndex) => (
+              <div className="plan-b-node" key={option.id}>
+                <CountermeasureCard
+                  actions={[option.action]}
+                  caseId={caseItem.id}
+                  label={`Plan_B ${planBIndex + 1}`}
+                  onDelete={() => {
+                    const result = dispatch({
+                      type: 'case.planB.delete',
+                      payload: { caseId: caseItem.id, planBId: option.id },
+                    });
+                    onFeedback(result, `Plan B ${planBIndex + 1} deleted.`);
+                  }}
+                  onFeedback={onFeedback}
+                  planBId={option.id}
+                  response={option.response}
+                  situationTitle={caseItem.title}
+                  source={option.source}
+                />
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      {addingPlanB ? (
+        <form className="add-plan-b-panel" onSubmit={addPlanB}>
+          <div>
+            <p className="eyebrow">Fallback countermeasure</p>
+            <strong>Add Plan B</strong>
+            <p>Use it if the earlier countermeasure cannot work.</p>
+          </div>
+          <label>
+            Plan B action
+            <textarea
+              autoFocus
+              maxLength={1200}
+              name="action"
+              placeholder="What will the Project owner do instead?"
+              required
+              rows={3}
+            />
+          </label>
+          <div className="form-actions">
+            <button type="button" onClick={() => setAddingPlanB(false)}>
+              Cancel
+            </button>
+            <button className="primary-action" type="submit">
+              Add Plan B
+            </button>
+          </div>
+        </form>
+      ) : null}
+
+      {caseItem.suggestedActions.length === 0 && LEGACY_AI_UI_ENABLED ? (
+        <button
+          aria-label={`Ask AI for actions for ${caseItem.title}`}
+          disabled={aiRequestBlocked}
+          type="button"
+          onClick={() => onRequestReview('case_actions', caseItem.id)}
+        >
+          Ask AI for actions
         </button>
       ) : null}
     </article>
@@ -1496,9 +1494,13 @@ function TagCard({
   showOrderControls: boolean;
 }) {
   const [showAddCase, setShowAddCase] = useState(false);
-  const undecidedCount = tag.cases.filter(
-    (caseItem) => caseItem.response === null,
-  ).length;
+  const undecidedCount = tag.cases.reduce(
+    (count, caseItem) =>
+      count +
+      (caseItem.response === null ? 1 : 0) +
+      caseItem.planBOptions.filter((option) => option.response === null).length,
+    0,
+  );
 
   function addCase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1684,6 +1686,7 @@ function TagCard({
       ) : null}
 
       <div className="tag-detail" hidden={!expanded}>
+        <div className="tag-detail-intro">
           <div className="tag-detail-meta">
             <span className="suggestion-label">
               {tag.source === 'agent'
@@ -1691,93 +1694,95 @@ function TagCard({
                 : 'Added by you'}
             </span>
           </div>
-          <p className="tag-rationale">{tag.rationale}</p>
-          <h3>{tag.summary}</h3>
-          <div className="case-list">
-            {tag.cases.map((caseItem, index) => (
-              <CaseCard
-                aiRequestBlocked={aiRequestBlocked}
-                caseItem={caseItem}
-                index={index}
-                isOnlyCase={tag.cases.length === 1}
-                key={caseItem.id}
-                onDelete={() => deleteCase(caseItem)}
-                onFeedback={onFeedback}
-                onRequestReview={onRequestReview}
-              />
-            ))}
+          <div className="tag-detail-copy">
+            <p className="tag-detail-guidance">{tag.summary}</p>
           </div>
-          {showAddCase ? (
-            <form className="compact-composer" onSubmit={addCase}>
-              <p className="eyebrow">Add a Situation</p>
-              <label>
-                Situation title
-                <input
-                  maxLength={120}
-                  name="title"
-                  placeholder="What else might happen?"
-                  required
-                />
-              </label>
-              <label>
-                Your starting action <span>(optional)</span>
-                <textarea
-                  maxLength={1200}
-                  name="ownAction"
-                  placeholder="What might you do in this situation?"
-                  rows={3}
-                />
-              </label>
-              <div className="form-actions">
-                <button type="button" onClick={() => setShowAddCase(false)}>
-                  Cancel
-                </button>
-                <button type="submit" value="add">
-                  Add only
-                </button>
-                {LEGACY_AI_UI_ENABLED ? (
-                  <button
-                    className="primary-action"
-                    disabled={aiRequestBlocked}
-                    type="submit"
-                    value="review"
-                  >
-                    Add &amp; ask AI
-                  </button>
-                ) : null}
-              </div>
-            </form>
-          ) : (
-            <div className="tag-actions">
-              <button
-                aria-label={`Add a Situation to ${tag.question}`}
-                type="button"
-                onClick={() => setShowAddCase(true)}
-              >
-                + Add Situation
+        </div>
+        <div className="case-list">
+          {tag.cases.map((caseItem, index) => (
+            <CaseCard
+              aiRequestBlocked={aiRequestBlocked}
+              caseItem={caseItem}
+              index={index}
+              isOnlyCase={tag.cases.length === 1}
+              key={caseItem.id}
+              onDelete={() => deleteCase(caseItem)}
+              onFeedback={onFeedback}
+              onRequestReview={onRequestReview}
+            />
+          ))}
+        </div>
+        {showAddCase ? (
+          <form className="compact-composer" onSubmit={addCase}>
+            <p className="eyebrow">Add a Situation</p>
+            <label>
+              Situation title
+              <input
+                maxLength={120}
+                name="title"
+                placeholder="What else might happen?"
+                required
+              />
+            </label>
+            <label>
+              Your starting action <span>(optional)</span>
+              <textarea
+                maxLength={1200}
+                name="ownAction"
+                placeholder="What might you do in this situation?"
+                rows={3}
+              />
+            </label>
+            <div className="form-actions">
+              <button type="button" onClick={() => setShowAddCase(false)}>
+                Cancel
+              </button>
+              <button type="submit" value="add">
+                Add only
               </button>
               {LEGACY_AI_UI_ENABLED ? (
                 <button
-                  aria-label={`Ask AI about ${tag.question}`}
+                  className="primary-action"
                   disabled={aiRequestBlocked}
-                  type="button"
-                  onClick={() => onRequestReview('tag_cases', tag.id)}
+                  type="submit"
+                  value="review"
                 >
-                  Ask AI about this What if
+                  Add &amp; ask AI
                 </button>
               ) : null}
-              <button
-                aria-label={`Delete What if ${tag.question}`}
-                className="delete-what-if-action"
-                title="Delete What if"
-                type="button"
-                onClick={deleteWhatIf}
-              >
-                <InterfaceIcon className="delete-action-icon" name="delete" />
-                <span>Delete What if</span>
-              </button>
             </div>
-          )}
+          </form>
+        ) : (
+          <div className="tag-actions">
+            <button
+              aria-label={`Add a Situation to ${tag.question}`}
+              type="button"
+              onClick={() => setShowAddCase(true)}
+            >
+              + Add Situation
+            </button>
+            {LEGACY_AI_UI_ENABLED ? (
+              <button
+                aria-label={`Ask AI about ${tag.question}`}
+                disabled={aiRequestBlocked}
+                type="button"
+                onClick={() => onRequestReview('tag_cases', tag.id)}
+              >
+                Ask AI about this What if
+              </button>
+            ) : null}
+            <button
+              aria-label={`Delete What if ${tag.question}`}
+              className="delete-what-if-action"
+              title="Delete What if"
+              type="button"
+              onClick={deleteWhatIf}
+            >
+              <InterfaceIcon className="delete-action-icon" name="delete" />
+              <span>Delete What if</span>
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1853,6 +1858,28 @@ function ResolvedTagCard({
                     ) : null}
                   </section>
                 ) : null}
+                {caseItem.planBOptions.map((option, planBIndex) => (
+                  <section
+                    aria-label={`Previous Plan B ${planBIndex + 1} for ${caseItem.title}`}
+                    className="resolved-case-response resolved-plan-b-response"
+                    key={option.id}
+                  >
+                    <p className="resolved-case-note">
+                      Plan B {planBIndex + 1}
+                      {option.response
+                        ? ` · ${dispositionLabels[option.response.disposition]}`
+                        : ' · Undecided'}
+                    </p>
+                    <p>{option.action}</p>
+                    {option.response?.actions.length ? (
+                      <ol>
+                        {option.response.actions.map((action, actionIndex) => (
+                          <li key={`${action}-${actionIndex}`}>{action}</li>
+                        ))}
+                      </ol>
+                    ) : null}
+                  </section>
+                ))}
               </article>
             ))}
           </div>
@@ -1950,11 +1977,19 @@ function GapSuggestionRow({
   );
 }
 
+type SelectedCountermeasureResponse = {
+  id: string;
+  kind: 'main' | 'plan-b';
+  label: string;
+  actions: string[];
+  response: CaseResponse;
+};
+
 type SelectedCaseResponse = {
   tag: MoshimoTag;
   caseItem: MoshimoCase;
   caseIndex: number;
-  response: NonNullable<MoshimoCase['response']>;
+  countermeasures: SelectedCountermeasureResponse[];
 };
 
 type SelectedTagResponseGroup = {
@@ -2019,38 +2054,56 @@ function FinalLaneHeadings() {
 function FinalResponseCard({
   tag,
   caseItem,
-  response,
   caseIndex,
+  countermeasures,
 }: SelectedCaseResponse) {
-  return (
-    <section className="final-response-case">
-      <header className="final-response-case-heading">
-        <span>Situation {caseIndex + 1}</span>
-        <h3>{caseItem.title}</h3>
-      </header>
+  const mainCountermeasure = countermeasures.find(
+    (countermeasure) => countermeasure.kind === 'main',
+  );
+  const planBCountermeasures = countermeasures.filter(
+    (countermeasure) => countermeasure.kind === 'plan-b',
+  );
+
+  function renderCountermeasure({
+    id,
+    kind,
+    label,
+    actions,
+    response,
+  }: SelectedCountermeasureResponse) {
+    return (
       <section
-        className={`final-response is-${response.disposition.replace('_', '-')}`}
+        className={`final-response is-${response.disposition.replace('_', '-')} is-${kind}`}
+        key={id}
       >
-        <div className="final-response-decision">
-          <InterfaceIcon
-            className="final-response-decision-icon"
-            name={dispositionIconNames[response.disposition]}
-          />
-          <strong>{dispositionLabels[response.disposition]}</strong>
+        <div className="final-countermeasure-heading">
+          <span>{label}</span>
+          <div className="final-response-decision">
+            <InterfaceIcon
+              className="final-response-decision-icon"
+              name={dispositionIconNames[response.disposition]}
+            />
+            <strong>{dispositionLabels[response.disposition]}</strong>
+          </div>
+        </div>
+        <div className="final-countermeasure-action">
+          <span>Countermeasure</span>
+          {actions.map((action, actionIndex) => (
+            <p key={`${action}-${actionIndex}`}>{action}</p>
+          ))}
         </div>
         {response.disposition === 'covered' ? (
-          <div className="final-response-copy">
-            <p>Handled in the main Plan.</p>
-            {response.actions[0] ? (
+          response.actions[0] ? (
+            <div className="final-response-copy">
               <p className="final-response-memo">
                 <span>Memo</span>
                 {response.actions[0]}
               </p>
-            ) : null}
-          </div>
+            </div>
+          ) : null
         ) : response.disposition === 'accept' ? (
           <div className="final-response-copy">
-            <p>No additional action planned.</p>
+            <p>Risk accepted without using this countermeasure.</p>
             {response.actions[0] ? (
               <p className="final-response-memo">
                 <span>Memo</span>
@@ -2058,17 +2111,11 @@ function FinalResponseCard({
               </p>
             ) : null}
           </div>
-        ) : response.disposition === 'plan_b' ? (
-          <ol className="final-plan-b-options">
-            {response.actions.map((action, index) => (
-              <li key={`${action}-${index}`}>
-                <span>Option {index + 1}</span>
-                <p>{action}</p>
-              </li>
-            ))}
-          </ol>
         ) : (
-          <p>{response.actions[0]}</p>
+          <div className="final-preparation-copy">
+            <span>Preparation</span>
+            <p>{response.actions[0]}</p>
+          </div>
         )}
         {response.disposition === 'prepare' ? (
           <small>
@@ -2082,6 +2129,31 @@ function FinalResponseCard({
           </small>
         ) : null}
       </section>
+    );
+  }
+
+  return (
+    <section className="final-response-case">
+      <header className="final-response-case-heading">
+        <span>Situation {caseIndex + 1}</span>
+        <h3>{caseItem.title}</h3>
+      </header>
+      <div
+        className={`final-countermeasure-list ${planBCountermeasures.length ? 'has-plan-b' : ''}`}
+      >
+        {mainCountermeasure ? renderCountermeasure(mainCountermeasure) : null}
+        {planBCountermeasures.length ? (
+          <div
+            className={`final-plan-b-branch ${mainCountermeasure ? '' : 'without-main'}`}
+          >
+            {planBCountermeasures.map((countermeasure) => (
+              <div className="final-plan-b-node" key={countermeasure.id}>
+                {renderCountermeasure(countermeasure)}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -2106,12 +2178,12 @@ function FinalTagGroupCard({
         </span>
       </summary>
       <div className="final-tag-cases">
-        {cases.map(({ caseItem, caseIndex, response }) => (
+        {cases.map(({ caseItem, caseIndex, countermeasures }) => (
           <FinalResponseCard
             caseIndex={caseIndex}
             caseItem={caseItem}
+            countermeasures={countermeasures}
             key={caseItem.id}
-            response={response}
             tag={tag}
           />
         ))}
@@ -2128,8 +2200,29 @@ function selectedResponseGroupsForItem(
     if (tag.lifecycle === 'resolved') continue;
     const cases: SelectedTagResponseGroup['cases'] = [];
     for (const [caseIndex, caseItem] of tag.cases.entries()) {
+      const countermeasures: SelectedCountermeasureResponse[] = [];
       if (caseItem.response && caseItem.response.disposition !== 'dismiss') {
-        cases.push({ caseItem, caseIndex, response: caseItem.response });
+        countermeasures.push({
+          id: `${caseItem.id}:main`,
+          kind: 'main',
+          label: 'Action',
+          actions: caseItem.suggestedActions,
+          response: caseItem.response,
+        });
+      }
+      caseItem.planBOptions.forEach((option, planBIndex) => {
+        if (option.response && option.response.disposition !== 'dismiss') {
+          countermeasures.push({
+            id: option.id,
+            kind: 'plan-b',
+            label: `Plan_B ${planBIndex + 1}`,
+            actions: [option.action],
+            response: option.response,
+          });
+        }
+      });
+      if (countermeasures.length) {
+        cases.push({ caseItem, caseIndex, countermeasures });
       }
     }
     if (cases.length) groups.push({ tag, cases });

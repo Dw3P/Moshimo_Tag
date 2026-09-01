@@ -116,6 +116,7 @@ test('retain, resolve, and replace recheck outcomes commit atomically while pres
     type: 'case.response.save',
     payload: {
       caseId: 'case-traffic-light',
+      planBId: null,
       disposition: 'accept',
       actions: ['Take the usual route and leave as planned.'],
       when: '',
