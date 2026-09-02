@@ -2130,6 +2130,65 @@ button:disabled {
   font-weight: 750;
 }
 
+.response-candidate-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid #9fbde0;
+  border-radius: 9px;
+  background: #f6f9fd;
+}
+
+.response-candidate-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.response-candidate-heading span {
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.response-candidate-heading small,
+.response-candidate-note,
+.response-candidate-list small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.response-candidate-list {
+  display: grid;
+  gap: 6px;
+}
+
+.response-candidate-list article {
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+  border-left: 3px solid #6f9ed0;
+  background: white;
+}
+
+.response-candidate-list strong {
+  font-size: 11px;
+}
+
+.response-candidate-list p,
+.response-candidate-note {
+  margin: 0;
+}
+
+.response-candidate-list p {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .case-choice-group {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

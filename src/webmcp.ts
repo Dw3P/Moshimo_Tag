@@ -1,6 +1,7 @@
 import {
   isEmptyWorkspaceProject,
   type AppState,
+  type CaseResponseCandidate,
   type CommandResult,
   type MoshimoCase,
   type MoshimoTag,
@@ -245,11 +246,20 @@ function siteMutationResultForAgent(
   operation: string,
   result: CommandResult,
 ): CommandResult | Record<string, unknown> {
-  if (operation !== 'edit_plan_b_options' || !result.ok) return result;
+  if (
+    (operation !== 'edit_plan_b_options' &&
+      operation !== 'edit_response_candidates') ||
+    !result.ok
+  ) {
+    return result;
+  }
   return {
     ...result,
     authority: {
-      scope: 'countermeasure_content_only',
+      scope:
+        operation === 'edit_plan_b_options'
+          ? 'countermeasure_content_only'
+          : 'response_candidates_only',
       display: 'updated_immediately',
       decisions: 'unchanged',
       nextRequiredActor: 'human',
@@ -2600,6 +2610,35 @@ type SiteEditPlanBOptionsInput =
       caseVersion: number;
     });
 
+type SiteEditResponseCandidatesInput =
+  | (SiteMutationBase & {
+      operation: 'replace';
+      caseId: string;
+      caseVersion: number;
+      planBId: string | null;
+      candidates: CaseResponseCandidate[];
+    })
+  | (SiteMutationBase & {
+      operation: 'upsert';
+      caseId: string;
+      caseVersion: number;
+      planBId: string | null;
+      candidate: CaseResponseCandidate;
+    })
+  | (SiteMutationBase & {
+      operation: 'delete';
+      caseId: string;
+      caseVersion: number;
+      planBId: string | null;
+      disposition: 'covered' | 'accept' | 'prepare';
+    })
+  | (SiteMutationBase & {
+      operation: 'discard';
+      caseId: string;
+      caseVersion: number;
+      planBId: string | null;
+    });
+
 type SiteMutationInput =
   | SiteCreateProjectInput
   | SiteOpenProjectInput
@@ -2608,7 +2647,8 @@ type SiteMutationInput =
   | SiteEditPlanInput
   | SiteEditWhatIfInput
   | SiteEditCaseInput
-  | SiteEditPlanBOptionsInput;
+  | SiteEditPlanBOptionsInput
+  | SiteEditResponseCandidatesInput;
 
 type SiteTagState = MoshimoTag & { impact?: SiteImpact | null };
 
@@ -2720,7 +2760,7 @@ const SITE_PLANNING_POLICY = {
   actionWriting:
     'Write every proposed action as something the Project owner can carry out alone. Do not invent co-owners, collaborators, assignees, teams, or helpers. A named third party may be the recipient of the owner action only when the user or supplied source names that party.',
   decisionAuthority:
-    'human_only: tools may create and edit candidate countermeasures, but only the person chooses Already covered, Accept risk, Prepare, or Dismiss.',
+    'human_only: tools may create countermeasures and prepare non-binding Covered, Accept, or Prepare candidates, but only the person chooses and saves Already covered, Accept risk, Prepare, or Dismiss. Dismiss has no agent-authored candidate because choosing it saves immediately.',
 } as const;
 
 function siteHasOnlyKeys(
@@ -2987,6 +3027,16 @@ function siteResponseProjection(
   };
 }
 
+function siteResponseCandidatesProjection(
+  candidates: CaseResponseCandidate[],
+) {
+  return candidates.map((candidate) => ({
+    disposition: candidate.disposition,
+    actions: [...candidate.actions],
+    when: candidate.when,
+  }));
+}
+
 function siteCaseProjection(caseItem: MoshimoCase) {
   return {
     id: caseItem.id,
@@ -3001,8 +3051,14 @@ function siteCaseProjection(caseItem: MoshimoCase) {
       number: index + 1,
       source: option.source,
       action: option.action,
+      responseCandidates: siteResponseCandidatesProjection(
+        option.responseCandidates,
+      ),
       response: siteResponseProjection(option.response),
     })),
+    responseCandidates: siteResponseCandidatesProjection(
+      caseItem.responseCandidates,
+    ),
     response: siteResponseProjection(caseItem.response),
   };
 }
@@ -4496,6 +4552,224 @@ function siteValidatePlanBOptionsEdit(
   );
 }
 
+function siteParseResponseCandidate(
+  value: unknown,
+): ValidationResult<CaseResponseCandidate> {
+  if (!isRecord(value) || typeof value.disposition !== 'string') {
+    return invalidInput(
+      'edit_response_candidates: candidate disposition is required.',
+    );
+  }
+  if (value.disposition === 'covered' || value.disposition === 'accept') {
+    if (!siteHasOnlyKeys(value, ['disposition', 'memo'])) {
+      return invalidInput(
+        'edit_response_candidates: Covered and Accept candidates may contain only disposition and memo.',
+      );
+    }
+    const memoValue = value.memo ?? '';
+    const memo = siteParseText(memoValue, 0, 1200);
+    if (memo === null) {
+      return invalidInput(
+        'edit_response_candidates: candidate memo is outside the allowed bounds.',
+      );
+    }
+    return {
+      ok: true,
+      value: {
+        disposition: value.disposition,
+        actions: memo ? [memo] : [],
+        when: '',
+      },
+    };
+  }
+  if (value.disposition === 'prepare') {
+    if (!siteHasOnlyKeys(value, ['action', 'disposition', 'when'])) {
+      return invalidInput(
+        'edit_response_candidates: Prepare candidates may contain only disposition, action, and when.',
+      );
+    }
+    const action = siteParseText(value.action, 1, 1200);
+    const when = siteParseText(value.when ?? '', 0, 120);
+    if (action === null || when === null) {
+      return invalidInput(
+        'edit_response_candidates: Prepare action or timing is outside the allowed bounds.',
+      );
+    }
+    return {
+      ok: true,
+      value: { disposition: 'prepare', actions: [action], when },
+    };
+  }
+  return invalidInput(
+    'edit_response_candidates: disposition must be covered, accept, or prepare. Dismiss is a human-only immediate decision and has no candidate.',
+  );
+}
+
+function siteParseResponseCandidates(
+  value: unknown,
+): ValidationResult<CaseResponseCandidate[]> {
+  if (!Array.isArray(value)) {
+    return invalidInput(
+      'edit_response_candidates: candidates must be an array.',
+    );
+  }
+  if (value.length > 3) {
+    return limitExceeded(
+      'edit_response_candidates: a countermeasure may have at most three response candidates.',
+    );
+  }
+  const candidates: CaseResponseCandidate[] = [];
+  const dispositions = new Set<string>();
+  for (const rawCandidate of value) {
+    const candidate = siteParseResponseCandidate(rawCandidate);
+    if (!candidate.ok) return candidate;
+    if (dispositions.has(candidate.value.disposition)) {
+      return invalidInput(
+        'edit_response_candidates: candidate dispositions must be unique.',
+      );
+    }
+    dispositions.add(candidate.value.disposition);
+    candidates.push(candidate.value);
+  }
+  return { ok: true, value: candidates };
+}
+
+function siteParseResponseCandidateTarget(
+  input: unknown,
+  extraRequired: string[] = [],
+): ValidationResult<{
+  base: Record<string, unknown>;
+  caseId: string;
+  caseVersion: number;
+  planBId: string | null;
+}> {
+  const base = siteParseBase(input, 'edit_response_candidates', [
+    'operation',
+    'caseId',
+    'caseVersion',
+    'planBId',
+    ...extraRequired,
+  ]);
+  if (!base.ok) return base;
+  const caseValue = siteParseVersionedId(
+    base.value,
+    'edit_response_candidates',
+    'caseId',
+    'caseVersion',
+  );
+  if (!caseValue.ok) return caseValue;
+  if (
+    base.value.planBId !== null &&
+    !isNonEmptyId(base.value.planBId)
+  ) {
+    return invalidInput(
+      'edit_response_candidates: planBId must be null for the main countermeasure or a current Plan B ID.',
+    );
+  }
+  return {
+    ok: true,
+    value: {
+      base: base.value,
+      caseId: caseValue.value.id,
+      caseVersion: caseValue.value.version,
+      planBId: base.value.planBId as string | null,
+    },
+  };
+}
+
+function siteValidateResponseCandidatesEdit(
+  input: unknown,
+): ValidationResult<SiteEditResponseCandidatesInput> {
+  if (!isRecord(input) || typeof input.operation !== 'string') {
+    return invalidInput('edit_response_candidates: operation is required.');
+  }
+  const operation = input.operation;
+  if (operation === 'replace') {
+    const target = siteParseResponseCandidateTarget(input, ['candidates']);
+    if (!target.ok) return target;
+    const candidates = siteParseResponseCandidates(target.value.base.candidates);
+    if (!candidates.ok) return candidates;
+    return {
+      ok: true,
+      value: {
+        idempotencyKey: target.value.base.idempotencyKey as string,
+        projectId: target.value.base.projectId as string,
+        projectVersion: target.value.base.projectVersion as number,
+        operation,
+        caseId: target.value.caseId,
+        caseVersion: target.value.caseVersion,
+        planBId: target.value.planBId,
+        candidates: candidates.value,
+      },
+    };
+  }
+  if (operation === 'upsert') {
+    const target = siteParseResponseCandidateTarget(input, ['candidate']);
+    if (!target.ok) return target;
+    const candidate = siteParseResponseCandidate(target.value.base.candidate);
+    if (!candidate.ok) return candidate;
+    return {
+      ok: true,
+      value: {
+        idempotencyKey: target.value.base.idempotencyKey as string,
+        projectId: target.value.base.projectId as string,
+        projectVersion: target.value.base.projectVersion as number,
+        operation,
+        caseId: target.value.caseId,
+        caseVersion: target.value.caseVersion,
+        planBId: target.value.planBId,
+        candidate: candidate.value,
+      },
+    };
+  }
+  if (operation === 'delete') {
+    const target = siteParseResponseCandidateTarget(input, ['disposition']);
+    if (!target.ok) return target;
+    const disposition = target.value.base.disposition;
+    if (
+      disposition !== 'covered' &&
+      disposition !== 'accept' &&
+      disposition !== 'prepare'
+    ) {
+      return invalidInput(
+        'edit_response_candidates: delete disposition must be covered, accept, or prepare.',
+      );
+    }
+    return {
+      ok: true,
+      value: {
+        idempotencyKey: target.value.base.idempotencyKey as string,
+        projectId: target.value.base.projectId as string,
+        projectVersion: target.value.base.projectVersion as number,
+        operation,
+        caseId: target.value.caseId,
+        caseVersion: target.value.caseVersion,
+        planBId: target.value.planBId,
+        disposition,
+      },
+    };
+  }
+  if (operation === 'discard') {
+    const target = siteParseResponseCandidateTarget(input);
+    if (!target.ok) return target;
+    return {
+      ok: true,
+      value: {
+        idempotencyKey: target.value.base.idempotencyKey as string,
+        projectId: target.value.base.projectId as string,
+        projectVersion: target.value.base.projectVersion as number,
+        operation,
+        caseId: target.value.caseId,
+        caseVersion: target.value.caseVersion,
+        planBId: target.value.planBId,
+      },
+    };
+  }
+  return invalidInput(
+    'edit_response_candidates: operation must be replace, upsert, delete, or discard.',
+  );
+}
+
 function siteCommandFailure(
   code: Extract<CommandResult, { ok: false }>['code'],
   message: string,
@@ -4789,6 +5063,78 @@ function siteDispatchMutation(
         options,
         projectVersion: planBValue.projectVersion,
         caseVersion: planBValue.caseVersion,
+      },
+    });
+  }
+
+  if (
+    operation === 'edit_response_candidates' &&
+    'operation' in value &&
+    'caseId' in value &&
+    'caseVersion' in value &&
+    'planBId' in value
+  ) {
+    const candidateValue = value as SiteEditResponseCandidatesInput;
+    let candidates: CaseResponseCandidate[];
+    if (candidateValue.operation === 'replace') {
+      candidates = candidateValue.candidates.map((candidate) => ({
+        ...candidate,
+        actions: [...candidate.actions],
+      }));
+    } else if (candidateValue.operation === 'discard') {
+      candidates = [];
+    } else {
+      const snapshot = dependencies.getSnapshot();
+      const location = siteFindCase(snapshot.project, candidateValue.caseId);
+      if (!location) {
+        return siteEntityNotFound('edit_response_candidates', 'Case');
+      }
+      const target =
+        candidateValue.planBId === null
+          ? location.caseItem
+          : location.caseItem.planBOptions.find(
+              (option) => option.id === candidateValue.planBId,
+            );
+      if (!target) {
+        return siteEntityNotFound('edit_response_candidates', 'Plan B');
+      }
+      candidates = target.responseCandidates.map((candidate) => ({
+        ...candidate,
+        actions: [...candidate.actions],
+      }));
+      if (candidateValue.operation === 'upsert') {
+        const candidateIndex = candidates.findIndex(
+          (candidate) =>
+            candidate.disposition === candidateValue.candidate.disposition,
+        );
+        const candidate = {
+          ...candidateValue.candidate,
+          actions: [...candidateValue.candidate.actions],
+        };
+        if (candidateIndex >= 0) candidates[candidateIndex] = candidate;
+        else candidates.push(candidate);
+      } else {
+        const candidateIndex = candidates.findIndex(
+          (candidate) =>
+            candidate.disposition === candidateValue.disposition,
+        );
+        if (candidateIndex < 0) {
+          return siteEntityNotFound(
+            'edit_response_candidates',
+            `${candidateValue.disposition} candidate`,
+          );
+        }
+        candidates.splice(candidateIndex, 1);
+      }
+    }
+    return dependencies.dispatch({
+      type: 'case.responseCandidates.set',
+      payload: {
+        caseId: candidateValue.caseId,
+        planBId: candidateValue.planBId,
+        candidates,
+        projectVersion: candidateValue.projectVersion,
+        caseVersion: candidateValue.caseVersion,
       },
     });
   }
@@ -5097,7 +5443,7 @@ function createGetProjectTool(
     name: 'get_project',
     title: 'Read Project',
     description:
-      'Read a bounded Project, Plan, What-if, Situation, or selected Final projection plus its planningPolicy. The API section value case and cases fields refer to Situations: concrete conditions or outcomes under a broader What-if. suggestedActions are the Situation main countermeasure; planBOptions are real fallback countermeasures nested under that Situation and shown immediately. Each main or Plan B countermeasure has its own human-only response. In response data, covered is shown as Already covered and accept as Accept risk.',
+      'Read a bounded Project, Plan, What-if, Situation, or selected Final projection plus its planningPolicy. The API section value case and cases fields refer to Situations: concrete conditions or outcomes under a broader What-if. suggestedActions are the Situation main countermeasure; planBOptions are real fallback countermeasures nested under that Situation and shown immediately. responseCandidates are non-binding Covered, Accept, or Prepare drafts created through WebMCP; response is the separate human-saved decision. Dismiss has no candidate because selecting it saves immediately. In response data, covered is shown as Already covered and accept as Accept risk.',
     inputSchema: {
       type: 'object',
       required: ['section'],
@@ -5126,7 +5472,7 @@ function createProjectTool(
     name: 'create_project',
     title: 'Create Project',
     description:
-      'Create a Project, optionally with one atomic ordered Plan bundle. Each What-if is a broader possibility; each nested Case is a concrete Situation or outcome and suggestedActions are its main countermeasure. The API keeps the cases field name for compatibility, while the page labels these entries Situation. Unless the user explicitly names other participants, write every action for the Project owner to carry out alone; never invent co-owners, collaborators, assignees, teams, or helpers. Candidate countermeasures remain undecided. Add fallback countermeasures afterward with edit_plan_b_options when useful. Never operate page response choices or Save response; only the person may decide. On an empty workspace, first call list_projects and use its currentProjectId/currentProjectVersion as this mutation context.',
+      'Create a Project, optionally with one atomic ordered Plan bundle. Each What-if is a broader possibility; each nested Case is a concrete Situation or outcome and suggestedActions are its main countermeasure. The API keeps the cases field name for compatibility, while the page labels these entries Situation. Unless the user explicitly names other participants, write every action for the Project owner to carry out alone; never invent co-owners, collaborators, assignees, teams, or helpers. Candidate countermeasures remain undecided. Add fallback countermeasures afterward with edit_plan_b_options and prepare Covered, Accept, or Prepare drafts with edit_response_candidates when requested. Never click page controls or save a response; only the person may decide. On an empty workspace, first call list_projects and use its currentProjectId/currentProjectVersion as this mutation context.',
     inputSchema: {
       type: 'object',
       required: ['description', 'idempotencyKey', 'projectId', 'projectVersion', 'title'],
@@ -5401,7 +5747,7 @@ function createEditCaseTool(
     name: 'edit_case',
     title: 'Edit Situation',
     description:
-      'Add, update, or delete one bounded Situation and its main countermeasure under a broader What-if. The tool name edit_case and Case IDs remain unchanged for compatibility. Unless the user explicitly names other participants, write every action for the Project owner to carry out alone. Editing a main countermeasure updates the page immediately and clears its earlier decision for human review. This tool cannot mark Already covered, Accept risk, Prepare, Dismiss, or save any human response.',
+      'Add, update, or delete one bounded Situation and its main countermeasure under a broader What-if. The tool name edit_case and Case IDs remain unchanged for compatibility. Unless the user explicitly names other participants, write every action for the Project owner to carry out alone. Editing a main countermeasure updates the page immediately and clears its earlier response candidates and decision for human review. Use edit_response_candidates—not browser clicks or typing into page controls—to prepare Covered, Accept, or Prepare drafts. This tool cannot choose or save any human response.',
     inputSchema: {
       oneOf: [
         siteSchema('add', ['tagId', 'tagVersion', 'title', 'suggestedActions'], {
@@ -5444,7 +5790,7 @@ function createEditPlanBOptionsTool(
     name: 'edit_plan_b_options',
     title: 'Edit Plan B Countermeasures',
     description:
-      'Create, replace, edit, or delete real Plan B fallback countermeasures under any Situation. They appear immediately beneath the main countermeasure; there is no draft or Review step. Plan B means the next countermeasure to use if an earlier one is not enough or cannot work. It is not the preparation needed to carry out the main countermeasure. The API keeps Case IDs, caseId, options, and optionNumber for compatibility. Use replace with an empty options array or discard to remove all Plan Bs; use add, update, or delete for one Plan B. optionNumber is one-based (Plan B 1 through Plan B 5). Unless the user explicitly names other participants, write each Plan B for the Project owner to carry out alone. Each Plan B remains undecided and has its own human-only Already covered, Accept risk, Prepare, or Dismiss response. Never operate response choices or Save response.',
+      'Use this WebMCP tool whenever the user asks for one or multiple Plan B fallback countermeasures. Do not click + Plan B or type into page controls. For multiple Plan Bs, use one batched replace call; for one, use add. They appear immediately beneath the main countermeasure with no draft or Review step. Plan B is the next countermeasure if an earlier one is not enough or cannot work, not the preparation needed to carry it out. Use replace with an empty options array or discard to remove all Plan Bs; use update or delete for one existing Plan B. optionNumber is one-based. Unless the user explicitly names other participants, write each Plan B for the Project owner to carry out alone. Each Plan B remains undecided; use edit_response_candidates for non-binding Covered, Accept, or Prepare drafts. Never click response choices or Save response.',
     inputSchema: {
       oneOf: [
         siteSchema('replace', ['caseId', 'caseVersion', 'options'], {
@@ -5484,6 +5830,96 @@ function createEditPlanBOptionsTool(
   };
 }
 
+function createEditResponseCandidatesTool(
+  dependencies: ReviewToolDependencies,
+  cache: Map<string, CachedApplyResult>,
+): WebMcpTool {
+  const targetProperties = {
+    caseId: { type: 'string', minLength: 1, maxLength: 160 },
+    caseVersion: { type: 'integer', minimum: 1 },
+    planBId: {
+      description:
+        'Use null for the Situation main countermeasure, or a current Plan B ID for that fallback countermeasure.',
+      anyOf: [
+        { type: 'null' },
+        { type: 'string', minLength: 1, maxLength: 160 },
+      ],
+    },
+  };
+  const candidate = {
+    oneOf: [
+      {
+        type: 'object',
+        required: ['disposition'],
+        additionalProperties: false,
+        properties: {
+          disposition: { const: 'covered' },
+          memo: { type: 'string', maxLength: 1200 },
+        },
+      },
+      {
+        type: 'object',
+        required: ['disposition'],
+        additionalProperties: false,
+        properties: {
+          disposition: { const: 'accept' },
+          memo: { type: 'string', maxLength: 1200 },
+        },
+      },
+      {
+        type: 'object',
+        required: ['action', 'disposition'],
+        additionalProperties: false,
+        properties: {
+          disposition: { const: 'prepare' },
+          action: { type: 'string', minLength: 1, maxLength: 1200 },
+          when: { type: 'string', maxLength: 120 },
+        },
+      },
+    ],
+  };
+  return {
+    name: 'edit_response_candidates',
+    title: 'Edit Response Candidates',
+    description:
+      'Use this WebMCP tool—not browser clicks or typing into page controls—to prepare non-binding Already covered (covered), Accept risk (accept), or Prepare candidate content for a Situation main countermeasure or any Plan B. Candidates persist and appear on the page immediately, but they never choose a disposition, save a response, or mark preparation Done. The person reviews a candidate, chooses the response, and saves the final decision. Dismiss is intentionally unavailable because choosing Dismiss saves immediately and must remain a human action. Use replace to set all candidates at once, upsert to add or revise one, delete to remove one disposition, or discard to remove all.',
+    inputSchema: {
+      oneOf: [
+        siteSchema('replace', ['caseId', 'caseVersion', 'planBId', 'candidates'], {
+          ...targetProperties,
+          candidates: {
+            type: 'array',
+            maxItems: 3,
+            items: candidate,
+          },
+        }),
+        siteSchema('upsert', ['caseId', 'caseVersion', 'planBId', 'candidate'], {
+          ...targetProperties,
+          candidate,
+        }),
+        siteSchema('delete', ['caseId', 'caseVersion', 'planBId', 'disposition'], {
+          ...targetProperties,
+          disposition: {
+            type: 'string',
+            enum: ['covered', 'accept', 'prepare'],
+          },
+        }),
+        siteSchema('discard', ['caseId', 'caseVersion', 'planBId'], targetProperties),
+      ],
+    },
+    annotations: { readOnlyHint: false, untrustedContentHint: true },
+    execute: async (input, options) =>
+      executeSiteMutation(
+        input,
+        options,
+        dependencies,
+        cache,
+        'edit_response_candidates',
+        siteValidateResponseCandidatesEdit,
+      ),
+  };
+}
+
 function createGetExportProjectionTool(
   dependencies: ReviewToolDependencies,
 ): WebMcpTool {
@@ -5513,6 +5949,7 @@ export function createSiteTools(
     createEditWhatIfTool(dependencies, cache),
     createEditCaseTool(dependencies, cache),
     createEditPlanBOptionsTool(dependencies, cache),
+    createEditResponseCandidatesTool(dependencies, cache),
     createGetExportProjectionTool(dependencies),
   ];
 }

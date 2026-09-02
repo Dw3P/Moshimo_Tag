@@ -769,7 +769,7 @@ test('WebMCP registration reports support, registers four static tools, and abor
   disposeUnsupported();
 });
 
-test('Direct Site tools discover eleven static tools and expose bounded section projections', async () => {
+test('Direct Site tools discover twelve static tools and expose bounded section projections', async () => {
   const storage = new MemoryStorage();
   assert.equal(initializePersistence(() => storage).kind, 'ready');
   const registered: WebMcpTool[] = [];
@@ -800,14 +800,15 @@ test('Direct Site tools discover eleven static tools and expose bounded section 
       'edit_what_if',
       'edit_case',
       'edit_plan_b_options',
+      'edit_response_candidates',
       'get_export_projection',
     ],
   );
   assert.deepEqual(statuses, ['checking', 'available']);
   assert.equal(registered.slice(0, 2).every((tool) => tool.annotations?.readOnlyHint), true);
-  assert.equal(registered.slice(2, 10).every((tool) => tool.annotations?.readOnlyHint === false), true);
-  assert.equal(registered[10].annotations?.readOnlyHint, true);
-  assert.equal(registered[10].annotations?.untrustedContentHint, true);
+  assert.equal(registered.slice(2, 11).every((tool) => tool.annotations?.readOnlyHint === false), true);
+  assert.equal(registered[11].annotations?.readOnlyHint, true);
+  assert.equal(registered[11].annotations?.untrustedContentHint, true);
 
   const editSituationTool = findTool(registered, 'edit_case');
   assert.equal(editSituationTool.title, 'Edit Situation');
@@ -827,6 +828,18 @@ test('Direct Site tools discover eleven static tools and expose bounded section 
   assert.match(
     findTool(registered, 'edit_plan_b_options').description,
     /appear immediately beneath the main countermeasure/i,
+  );
+  assert.match(
+    findTool(registered, 'edit_plan_b_options').description,
+    /Do not click \+ Plan B/i,
+  );
+  assert.match(
+    findTool(registered, 'edit_response_candidates').description,
+    /not browser clicks or typing into page controls/i,
+  );
+  assert.match(
+    findTool(registered, 'edit_response_candidates').description,
+    /Dismiss is intentionally unavailable/i,
   );
 
   const listTool = findTool(registered, 'list_projects');
@@ -1604,6 +1617,262 @@ test('Direct WebMCP shows real Plan B countermeasures immediately without decidi
   assert.equal(agentRevision.ok, true);
   assert.equal(currentCase().planBOptions[0].response, null);
   assert.equal(currentCase().response, null);
+});
+
+test('Direct WebMCP persists and immediately exposes Covered, Accept, and Prepare candidates without making a decision', async () => {
+  const storage = new MemoryStorage();
+  assert.equal(initializePersistence(() => storage).kind, 'ready');
+  const committedCandidates: Array<{
+    operation: string;
+    visibleCandidates: string[];
+  }> = [];
+  const currentCase = () =>
+    getSnapshot().project.timeline[0].tags[0].cases[0];
+  const tools = createSiteTools({
+    dispatch,
+    getSnapshot,
+    onMutationCommitted: ({ operation }) => {
+      committedCandidates.push({
+        operation,
+        visibleCandidates: currentCase().responseCandidates.map(
+          (candidate) => candidate.disposition,
+        ),
+      });
+    },
+  });
+  const editCandidates = findTool(tools, 'edit_response_candidates');
+  const candidateSchema = JSON.stringify(editCandidates.inputSchema);
+  assert.equal(candidateSchema.includes('dismiss'), false);
+  assert.equal(candidateSchema.includes('status'), false);
+
+  const replaced = JSON.parse(
+    await editCandidates.execute(
+      {
+        idempotencyKey: 'main-response-candidates',
+        projectId: getSnapshot().project.id,
+        projectVersion: getSnapshot().project.version,
+        operation: 'replace',
+        caseId: currentCase().id,
+        caseVersion: currentCase().version,
+        planBId: null,
+        candidates: [
+          {
+            disposition: 'covered',
+            memo: 'The cable kit already includes a tested spare.',
+          },
+          {
+            disposition: 'accept',
+            memo: 'Continue only if the microphone is optional.',
+          },
+          {
+            disposition: 'prepare',
+            action: 'Place the tested spare cable beside the mixer.',
+            when: 'Before sound check',
+          },
+        ],
+      },
+      { signal: new AbortController().signal },
+    ),
+  );
+  assert.equal(replaced.ok, true);
+  assert.deepEqual(replaced.authority, {
+    scope: 'response_candidates_only',
+    display: 'updated_immediately',
+    decisions: 'unchanged',
+    nextRequiredActor: 'human',
+  });
+  assert.equal(currentCase().response, null);
+  assert.deepEqual(
+    currentCase().responseCandidates,
+    [
+      {
+        disposition: 'covered',
+        actions: ['The cable kit already includes a tested spare.'],
+        when: '',
+      },
+      {
+        disposition: 'accept',
+        actions: ['Continue only if the microphone is optional.'],
+        when: '',
+      },
+      {
+        disposition: 'prepare',
+        actions: ['Place the tested spare cable beside the mixer.'],
+        when: 'Before sound check',
+      },
+    ],
+  );
+  assert.deepEqual(committedCandidates.at(-1), {
+    operation: 'edit_response_candidates',
+    visibleCandidates: ['covered', 'accept', 'prepare'],
+  });
+
+  const projected = JSON.parse(
+    await findTool(tools, 'get_project').execute(
+      { section: 'case', entityId: currentCase().id },
+      { signal: new AbortController().signal },
+    ),
+  );
+  assert.deepEqual(
+    projected.case.responseCandidates,
+    currentCase().responseCandidates,
+  );
+  assert.equal(projected.case.response, null);
+
+  const planBResult = JSON.parse(
+    await findTool(tools, 'edit_plan_b_options').execute(
+      {
+        idempotencyKey: 'candidate-test-plan-b',
+        projectId: getSnapshot().project.id,
+        projectVersion: getSnapshot().project.version,
+        operation: 'add',
+        caseId: currentCase().id,
+        caseVersion: currentCase().version,
+        option: 'Switch to the wired lectern microphone.',
+      },
+      { signal: new AbortController().signal },
+    ),
+  );
+  assert.equal(planBResult.ok, true);
+  const planBId = currentCase().planBOptions[0].id;
+  const planBCandidate = JSON.parse(
+    await editCandidates.execute(
+      {
+        idempotencyKey: 'plan-b-prepare-candidate',
+        projectId: getSnapshot().project.id,
+        projectVersion: getSnapshot().project.version,
+        operation: 'upsert',
+        caseId: currentCase().id,
+        caseVersion: currentCase().version,
+        planBId,
+        candidate: {
+          disposition: 'prepare',
+          action: 'Test the wired lectern microphone.',
+          when: 'Before doors open',
+        },
+      },
+      { signal: new AbortController().signal },
+    ),
+  );
+  assert.equal(planBCandidate.ok, true);
+  assert.equal(currentCase().planBOptions[0].response, null);
+  assert.deepEqual(currentCase().planBOptions[0].responseCandidates, [
+    {
+      disposition: 'prepare',
+      actions: ['Test the wired lectern microphone.'],
+      when: 'Before doors open',
+    },
+  ]);
+
+  const beforeDismissCandidate = getSnapshot();
+  const rejectedDismissCandidate = JSON.parse(
+    await editCandidates.execute(
+      {
+        idempotencyKey: 'dismiss-is-not-a-candidate',
+        projectId: beforeDismissCandidate.project.id,
+        projectVersion: beforeDismissCandidate.project.version,
+        operation: 'upsert',
+        caseId: currentCase().id,
+        caseVersion: currentCase().version,
+        planBId: null,
+        candidate: { disposition: 'dismiss' },
+      },
+      { signal: new AbortController().signal },
+    ),
+  );
+  assert.equal(rejectedDismissCandidate.ok, false);
+  assert.equal(rejectedDismissCandidate.code, 'INVALID_INPUT');
+  assert.strictEqual(getSnapshot(), beforeDismissCandidate);
+
+  const rejectedPreparationStatus = JSON.parse(
+    await editCandidates.execute(
+      {
+        idempotencyKey: 'agent-cannot-mark-preparation-done',
+        projectId: beforeDismissCandidate.project.id,
+        projectVersion: beforeDismissCandidate.project.version,
+        operation: 'upsert',
+        caseId: currentCase().id,
+        caseVersion: currentCase().version,
+        planBId: null,
+        candidate: {
+          disposition: 'prepare',
+          action: 'Place the cable beside the mixer.',
+          when: 'Before sound check',
+          status: 'done',
+        },
+      },
+      { signal: new AbortController().signal },
+    ),
+  );
+  assert.equal(rejectedPreparationStatus.ok, false);
+  assert.equal(rejectedPreparationStatus.code, 'INVALID_INPUT');
+  assert.strictEqual(getSnapshot(), beforeDismissCandidate);
+
+  const humanSave = dispatch({
+    type: 'case.response.save',
+    payload: {
+      caseId: currentCase().id,
+      planBId: null,
+      disposition: 'prepare',
+      actions: ['Place the tested spare cable beside the mixer.'],
+      when: 'Before sound check',
+      status: 'pending',
+    },
+  });
+  assert.equal(humanSave.ok, true);
+  assert.deepEqual(currentCase().responseCandidates, []);
+  assert.deepEqual(currentCase().response, {
+    disposition: 'prepare',
+    actions: ['Place the tested spare cable beside the mixer.'],
+    when: 'Before sound check',
+    status: 'pending',
+  });
+  assert.deepEqual(currentCase().planBOptions[0].responseCandidates, [
+    {
+      disposition: 'prepare',
+      actions: ['Test the wired lectern microphone.'],
+      when: 'Before doors open',
+    },
+  ]);
+
+  const candidateAfterDecision = JSON.parse(
+    await editCandidates.execute(
+      {
+        idempotencyKey: 'candidate-does-not-overwrite-human-decision',
+        projectId: getSnapshot().project.id,
+        projectVersion: getSnapshot().project.version,
+        operation: 'upsert',
+        caseId: currentCase().id,
+        caseVersion: currentCase().version,
+        planBId: null,
+        candidate: {
+          disposition: 'covered',
+          memo: 'A later review can consider the installed spare.',
+        },
+      },
+      { signal: new AbortController().signal },
+    ),
+  );
+  assert.equal(candidateAfterDecision.ok, true);
+  assert.equal(currentCase().response?.disposition, 'prepare');
+  assert.deepEqual(currentCase().responseCandidates, [
+    {
+      disposition: 'covered',
+      actions: ['A later review can consider the installed spare.'],
+      when: '',
+    },
+  ]);
+
+  assert.deepEqual(initializePersistence(() => storage), {
+    kind: 'ready',
+    source: 'stored',
+  });
+  assert.deepEqual(currentCase().response?.disposition, 'prepare');
+  assert.deepEqual(currentCase().responseCandidates[0].disposition, 'covered');
+  assert.deepEqual(
+    currentCase().planBOptions[0].responseCandidates[0].disposition,
+    'prepare',
+  );
 });
 
 type SiteImpactLike = {

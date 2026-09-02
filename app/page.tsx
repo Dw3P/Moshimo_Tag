@@ -21,6 +21,7 @@ import {
   subscribe,
   type CaseDisposition,
   type CaseResponse,
+  type CaseResponseCandidate,
   type CommandResult,
   type ImpactRank,
   type MoshimoCase,
@@ -880,6 +881,7 @@ function CountermeasureCard({
   actions,
   source,
   response,
+  responseCandidates,
   onDelete,
   onFeedback,
 }: {
@@ -890,6 +892,7 @@ function CountermeasureCard({
   actions: string[];
   source: PlanBCountermeasure['source'] | null;
   response: CaseResponse | null;
+  responseCandidates: CaseResponseCandidate[];
   onDelete?: () => void;
   onFeedback: (result: CommandResult, successMessage: string) => boolean;
 }) {
@@ -914,14 +917,18 @@ function CountermeasureCard({
 
   function initialDraft(disposition: EditableCaseDisposition): CaseResponseDraft {
     const existing = response?.disposition === disposition ? response : null;
+    const candidate = responseCandidates.find(
+      (entry) => entry.disposition === disposition,
+    );
+    const startingPoint = existing ?? candidate ?? null;
     const optionalMemo = disposition === 'covered' || disposition === 'accept';
     return {
-      actions: existing
-        ? optionalMemo && existing.actions.length === 0
+      actions: startingPoint
+        ? optionalMemo && startingPoint.actions.length === 0
           ? ['']
-          : [...existing.actions]
+          : [...startingPoint.actions]
         : [''],
-      when: existing?.when ?? '',
+      when: startingPoint?.when ?? '',
       status: existing?.status ?? 'pending',
     };
   }
@@ -1150,6 +1157,44 @@ function CountermeasureCard({
           >
             Edit response
           </button>
+        </section>
+      ) : null}
+
+      {responseCandidates.length ? (
+        <section
+          aria-label={`WebMCP response candidates for ${label}`}
+          className="response-candidate-panel"
+        >
+          <div className="response-candidate-heading">
+            <span>WebMCP candidates</span>
+            <small>
+              {response ? 'Saved response unchanged' : 'Prepared only · you decide'}
+            </small>
+          </div>
+          <div className="response-candidate-list">
+            {responseCandidates.map((candidate) => (
+              <article key={candidate.disposition}>
+                <strong>{dispositionLabels[candidate.disposition]}</strong>
+                {candidate.actions[0] ? (
+                  <p>
+                    {candidate.disposition === 'prepare'
+                      ? candidate.actions[0]
+                      : `Memo: ${candidate.actions[0]}`}
+                  </p>
+                ) : (
+                  <p>No memo proposed.</p>
+                )}
+                {candidate.disposition === 'prepare' && candidate.when ? (
+                  <small>When: {candidate.when}</small>
+                ) : null}
+              </article>
+            ))}
+          </div>
+          <p className="response-candidate-note">
+            {response
+              ? 'These candidates do not change the saved response.'
+              : 'Nothing is decided until you choose and save a response.'}
+          </p>
         </section>
       ) : null}
 
@@ -1392,6 +1437,7 @@ function CaseCard({
           onFeedback={onFeedback}
           planBId={null}
           response={caseItem.response}
+          responseCandidates={caseItem.responseCandidates}
           situationTitle={caseItem.title}
           source={caseItem.suggestedActionSource}
         />
@@ -1414,6 +1460,7 @@ function CaseCard({
                   onFeedback={onFeedback}
                   planBId={option.id}
                   response={option.response}
+                  responseCandidates={option.responseCandidates}
                   situationTitle={caseItem.title}
                   source={option.source}
                 />

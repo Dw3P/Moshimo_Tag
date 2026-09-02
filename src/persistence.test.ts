@@ -67,6 +67,7 @@ function asSchemaVersion2Project(project: unknown) {
       for (const caseItem of tag.cases) {
         delete caseItem.suggestedActionSource;
         delete caseItem.planBOptions;
+        delete caseItem.responseCandidates;
       }
     }
   }
@@ -83,6 +84,7 @@ function asSchemaVersion3State(state: unknown) {
         for (const caseItem of tag.cases) {
           delete caseItem.suggestedActionSource;
           delete caseItem.planBOptions;
+          delete caseItem.responseCandidates;
         }
       }
     }
@@ -307,7 +309,7 @@ test('local persistence Profile preserves valid state and contains every failure
   );
   assert.strictEqual(getSnapshot(), lastValid);
 
-  for (const schemaVersion of [0, 8]) {
+  for (const schemaVersion of [0, 9]) {
     const unsupported = new ProfileStorage();
     unsupported.values.set(STORAGE_KEY, JSON.stringify({ schemaVersion }));
     assertRecoveryReason(
@@ -718,7 +720,7 @@ test('project.create manual and AI modes persist distinct request state atomical
   assert.strictEqual(getSnapshot(), beforeNonemptyPlanRequest);
 });
 
-test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated to v7', () => {
+test('schemaVersion 1 through 7 bytes are strictly validated and lazily migrated to v8', () => {
   const seedStorage = new ProfileStorage();
   assert.equal(initializePersistence(() => seedStorage).kind, 'ready');
   const schemaVersion2Project = asSchemaVersion2Project(
@@ -740,7 +742,7 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
     source: 'stored',
   });
   assert.equal(version2Storage.setKeys.length, 0);
-  assert.equal(getSnapshot().schemaVersion, 7);
+  assert.equal(getSnapshot().schemaVersion, 8);
   assert.equal(getSnapshot().project.activeRecheckRequest, null);
   assert.equal(
     getSnapshot().project.timeline.every((item) =>
@@ -789,7 +791,7 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
     source: 'stored',
   });
   assert.equal(version3Storage.setKeys.length, 0);
-  assert.equal(getSnapshot().schemaVersion, 7);
+  assert.equal(getSnapshot().schemaVersion, 8);
   assert.equal(
     getSnapshot().project.timeline[0].tags[0].cases[0].suggestedActionSource,
     'agent',
@@ -822,6 +824,7 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
       for (const tag of item.tags) {
         for (const caseItem of tag.cases) {
           delete caseItem.planBOptions;
+          delete caseItem.responseCandidates;
         }
       }
     }
@@ -835,7 +838,7 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
     kind: 'ready',
     source: 'stored',
   });
-  assert.equal(getSnapshot().schemaVersion, 7);
+  assert.equal(getSnapshot().schemaVersion, 8);
   assert.equal(
     getSnapshot().project.timeline.every((item) =>
       item.tags.every((tag) =>
@@ -856,6 +859,7 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
       for (const tag of item.tags) {
         for (const caseItem of tag.cases) {
           delete caseItem.planBOptions;
+          delete caseItem.responseCandidates;
           caseItem.planBOptionsDraft = null;
         }
       }
@@ -874,7 +878,7 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
     kind: 'ready',
     source: 'stored',
   });
-  assert.equal(getSnapshot().schemaVersion, 7);
+  assert.equal(getSnapshot().schemaVersion, 8);
   const migratedCases = getSnapshot().project.timeline[0].tags[0].cases;
   assert.equal(migratedCases[0].planBOptions[0].action, 'Use the backup route.');
   assert.equal(migratedCases[0].planBOptions[0].response, null);
@@ -885,6 +889,43 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
     when: '',
     status: 'pending',
   });
+
+  const schemaVersion7State = JSON.parse(JSON.stringify(getSnapshot()));
+  schemaVersion7State.schemaVersion = 7;
+  for (const project of [
+    schemaVersion7State.project,
+    ...schemaVersion7State.projects,
+  ]) {
+    for (const item of project.timeline) {
+      for (const tag of item.tags) {
+        for (const caseItem of tag.cases) {
+          delete caseItem.responseCandidates;
+          for (const option of caseItem.planBOptions) {
+            delete option.responseCandidates;
+          }
+        }
+      }
+    }
+  }
+  const version7Storage = new ProfileStorage();
+  version7Storage.values.set(
+    STORAGE_KEY,
+    JSON.stringify(schemaVersion7State),
+  );
+  assert.deepEqual(initializePersistence(() => version7Storage), {
+    kind: 'ready',
+    source: 'stored',
+  });
+  assert.equal(getSnapshot().schemaVersion, 8);
+  assert.deepEqual(
+    getSnapshot().project.timeline[0].tags[0].cases[0].responseCandidates,
+    [],
+  );
+  assert.deepEqual(
+    getSnapshot().project.timeline[0].tags[0].cases[0].planBOptions[0]
+      .responseCandidates,
+    [],
+  );
 
   const legacyStorage = new ProfileStorage();
   legacyStorage.values.set(
@@ -901,7 +942,7 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
     source: 'stored',
   });
   assert.equal(legacyStorage.setKeys.length, 0);
-  assert.equal(getSnapshot().schemaVersion, 7);
+  assert.equal(getSnapshot().schemaVersion, 8);
   assert.deepEqual(getSnapshot().projects, []);
   assert.equal(getSnapshot().project.title, 'Test Flight Plan');
 
@@ -928,7 +969,7 @@ test('schemaVersion 1 through 6 bytes are strictly validated and lazily migrated
   assert.equal(created.ok, true);
   assert.deepEqual(legacyStorage.setKeys, [STORAGE_KEY]);
   const persisted = JSON.parse(legacyStorage.values.get(STORAGE_KEY) ?? '');
-  assert.equal(persisted.schemaVersion, 7);
+  assert.equal(persisted.schemaVersion, 8);
   assert.equal(Array.isArray(persisted.projects), true);
   assert.equal(persisted.projects.length, 1);
 
@@ -979,6 +1020,7 @@ test('schemaVersion 4 migration clears legacy requests and adds null Impact', ()
         delete tag.impact;
         for (const caseItem of tag.cases) {
           delete caseItem.planBOptions;
+          delete caseItem.responseCandidates;
         }
       }
     }
@@ -998,7 +1040,7 @@ test('schemaVersion 4 migration clears legacy requests and adds null Impact', ()
     kind: 'ready',
     source: 'stored',
   });
-  assert.equal(getSnapshot().schemaVersion, 7);
+  assert.equal(getSnapshot().schemaVersion, 8);
   assert.equal(getSnapshot().project.activeReviewRequest, null);
   assert.equal(getSnapshot().project.activeRecheckRequest, null);
   assert.equal(
@@ -1030,7 +1072,7 @@ test('schemaVersion 4 migration clears legacy requests and adds null Impact', ()
     kind: 'ready',
     source: 'stored',
   });
-  assert.equal(getSnapshot().schemaVersion, 7);
+  assert.equal(getSnapshot().schemaVersion, 8);
   assert.equal(getSnapshot().project.activeReviewRequest, null);
   assert.equal(getSnapshot().project.activeRecheckRequest, null);
   assert.equal(getSnapshot().project.timeline[0].tags[0].impact, null);

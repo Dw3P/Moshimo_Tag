@@ -13,6 +13,7 @@ export type CaseDisposition =
   | 'accept'
   | 'prepare'
   | 'dismiss';
+export type CandidateCaseDisposition = Exclude<CaseDisposition, 'dismiss'>;
 type LegacyCaseDisposition = CaseDisposition | 'plan_b';
 type LegacyCaseResponse = Omit<CaseResponse, 'disposition'> & {
   disposition: LegacyCaseDisposition;
@@ -35,6 +36,7 @@ export interface MoshimoCase {
   suggestedActions: string[];
   suggestedActionSource: SuggestedActionSource | null;
   planBOptions: PlanBCountermeasure[];
+  responseCandidates: CaseResponseCandidate[];
   response: CaseResponse | null;
 }
 
@@ -43,7 +45,14 @@ export interface PlanBCountermeasure {
   version: number;
   source: SuggestedActionSource;
   action: string;
+  responseCandidates: CaseResponseCandidate[];
   response: CaseResponse | null;
+}
+
+export interface CaseResponseCandidate {
+  disposition: CandidateCaseDisposition;
+  actions: string[];
+  when: string;
 }
 
 export interface CaseResponse {
@@ -226,7 +235,7 @@ type RecheckOutcomeInput =
     };
 
 export interface AppState {
-  schemaVersion: 7;
+  schemaVersion: 8;
   project: ProjectState;
   projects: ProjectState[];
   undoDelete: DeletedTimelineItem | null;
@@ -423,6 +432,16 @@ export type AppCommand =
       };
     }
   | {
+      type: 'case.responseCandidates.set';
+      payload: {
+        caseId: string;
+        planBId: string | null;
+        candidates: CaseResponseCandidate[];
+        projectVersion?: number;
+        caseVersion?: number;
+      };
+    }
+  | {
       type: 'case.planB.add';
       payload: { caseId: string; action: string };
     }
@@ -502,7 +521,7 @@ export type PersistenceResult =
     };
 
 const emptyWorkspaceState: AppState = {
-  schemaVersion: 7,
+  schemaVersion: 8,
   project: {
     id: EMPTY_WORKSPACE_PROJECT_ID,
     version: 1,
@@ -1685,6 +1704,49 @@ function parseCommand(raw: unknown): AppCommand | null {
         },
       };
     }
+    case 'case.responseCandidates.set': {
+      const versions = parseOptionalVersions(payload, [
+        'projectVersion',
+        'caseVersion',
+      ]);
+      if (
+        !hasRequiredAndOptionalKeys(
+          payload,
+          ['candidates', 'caseId', 'planBId'],
+          ['caseVersion', 'projectVersion'],
+        ) ||
+        typeof payload.caseId !== 'string' ||
+        (payload.planBId !== null && typeof payload.planBId !== 'string') ||
+        !Array.isArray(payload.candidates) ||
+        !payload.candidates.every(
+          (candidate) =>
+            isRecord(candidate) &&
+            hasExactKeys(candidate, ['actions', 'disposition', 'when']) &&
+            (candidate.disposition === 'covered' ||
+              candidate.disposition === 'accept' ||
+              candidate.disposition === 'prepare') &&
+            Array.isArray(candidate.actions) &&
+            candidate.actions.every((action) => typeof action === 'string') &&
+            typeof candidate.when === 'string',
+        ) ||
+        versions === null
+      ) {
+        return null;
+      }
+      return {
+        type: raw.type,
+        payload: {
+          caseId: payload.caseId,
+          planBId: payload.planBId,
+          candidates: payload.candidates.map((candidate) => ({
+            disposition: candidate.disposition as CandidateCaseDisposition,
+            actions: [...(candidate.actions as string[])],
+            when: candidate.when as string,
+          })),
+          ...versions,
+        },
+      };
+    }
     case 'case.planB.add': {
       if (
         !hasExactKeys(payload, ['action', 'caseId']) ||
@@ -1880,6 +1942,41 @@ function validateStoredCaseResponse(
   );
 }
 
+function validateStoredCaseResponseCandidate(
+  value: unknown,
+): value is CaseResponseCandidate {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['actions', 'disposition', 'when']) ||
+    (value.disposition !== 'covered' &&
+      value.disposition !== 'accept' &&
+      value.disposition !== 'prepare') ||
+    !Array.isArray(value.actions) ||
+    !value.actions.every((action) => isBoundedString(action, 1, 1200)) ||
+    textLength((value.actions as string[]).join('')) > 1200 ||
+    !isBoundedString(value.when, 0, 120)
+  ) {
+    return false;
+  }
+  if (value.disposition === 'prepare') return value.actions.length === 1;
+  return value.actions.length <= 1 && value.when === '';
+}
+
+function validateStoredCaseResponseCandidates(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 3) return false;
+  const dispositions = new Set<CandidateCaseDisposition>();
+  for (const candidate of value) {
+    if (
+      !validateStoredCaseResponseCandidate(candidate) ||
+      dispositions.has(candidate.disposition)
+    ) {
+      return false;
+    }
+    dispositions.add(candidate.disposition);
+  }
+  return true;
+}
+
 function validateStoredImpact(value: unknown): boolean {
   const parsed = parseImpact(value);
   if (!parsed.ok) return false;
@@ -1887,19 +1984,31 @@ function validateStoredImpact(value: unknown): boolean {
   return parsed.value.penalty === clean(parsed.value.penalty);
 }
 
-type StoredSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type StoredSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 function validateStoredPlanBOption(
   value: unknown,
   ids: Set<string>,
+  schemaVersion: StoredSchemaVersion,
 ): value is PlanBCountermeasure {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['action', 'id', 'response', 'source', 'version']) &&
+    (schemaVersion >= 8
+      ? hasExactKeys(value, [
+          'action',
+          'id',
+          'response',
+          'responseCandidates',
+          'source',
+          'version',
+        ])
+      : hasExactKeys(value, ['action', 'id', 'response', 'source', 'version'])) &&
     addUniqueId(value.id, ids) &&
     isVersion(value.version) &&
     (value.source === 'agent' || value.source === 'human') &&
     isBoundedString(value.action, 1, 1200) &&
+    (schemaVersion < 8 ||
+      validateStoredCaseResponseCandidates(value.responseCandidates)) &&
     validateStoredCaseResponse(value.response)
   );
 }
@@ -1907,7 +2016,7 @@ function validateStoredPlanBOption(
 function validateStoredCase(
   value: unknown,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 7,
+  schemaVersion: StoredSchemaVersion = 8,
 ): boolean {
   if (!isRecord(value)) return false;
   const currentShape = hasExactKeys(value, [
@@ -1947,6 +2056,17 @@ function validateStoredCase(
     'title',
     'version',
   ]);
+  const v8Shape = hasExactKeys(value, [
+    'id',
+    'planBOptions',
+    'response',
+    'responseCandidates',
+    'source',
+    'suggestedActionSource',
+    'suggestedActions',
+    'title',
+    'version',
+  ]);
   const legacyShape = hasExactKeys(value, [
     'id',
     'source',
@@ -1954,7 +2074,8 @@ function validateStoredCase(
     'title',
   ]);
   const useLegacyShape = schemaVersion === 1 && legacyShape && !currentShape;
-  if (schemaVersion >= 7 && !v7Shape) return false;
+  if (schemaVersion >= 8 && !v8Shape) return false;
+  if (schemaVersion === 7 && !v7Shape) return false;
   if (schemaVersion === 6 && !v6Shape) return false;
   if (schemaVersion >= 4 && schemaVersion < 6 && !v5Shape) return false;
   if (schemaVersion >= 2 && schemaVersion < 4 && !currentShape) return false;
@@ -2006,13 +2127,19 @@ function validateStoredCase(
     (!Array.isArray(value.planBOptions) ||
       value.planBOptions.length > 5 ||
       !value.planBOptions.every((option) =>
-        validateStoredPlanBOption(option, ids),
+        validateStoredPlanBOption(option, ids, schemaVersion),
       ) ||
       textLength(
         (value.planBOptions as PlanBCountermeasure[])
           .map((option) => option.action)
           .join(''),
       ) > 4800)
+  ) {
+    return false;
+  }
+  if (
+    schemaVersion >= 8 &&
+    !validateStoredCaseResponseCandidates(value.responseCandidates)
   ) {
     return false;
   }
@@ -2026,7 +2153,7 @@ function validateStoredTag(
   value: unknown,
   anchorItemId: string,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 7,
+  schemaVersion: StoredSchemaVersion = 8,
 ): boolean {
   if (!isRecord(value)) return false;
   const v4Shape = hasExactKeys(value, [
@@ -2147,7 +2274,7 @@ function validateStoredTag(
 function validateStoredItem(
   value: unknown,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 7,
+  schemaVersion: StoredSchemaVersion = 8,
 ): boolean {
   if (
     !isRecord(value) ||
@@ -2213,7 +2340,7 @@ function validateStoredReviewRequest(
   value: unknown,
   project: ProjectState,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 7,
+  schemaVersion: StoredSchemaVersion = 8,
 ): boolean {
   if (
     !isRecord(value) ||
@@ -2320,7 +2447,7 @@ function validateStoredProject(
   ids: Set<string>,
   allowActiveReviewRequest: boolean,
   minimumTimelineItems = 0,
-  schemaVersion: StoredSchemaVersion = 7,
+  schemaVersion: StoredSchemaVersion = 8,
 ): value is ProjectState {
   if (!isRecord(value)) return false;
 
@@ -2423,7 +2550,7 @@ function validateStoredProject(
 function validateStoredUndoDelete(
   value: unknown,
   ids: Set<string>,
-  schemaVersion: StoredSchemaVersion = 7,
+  schemaVersion: StoredSchemaVersion = 8,
 ): boolean {
   if (value === null) return true;
   if (
@@ -2488,6 +2615,13 @@ interface StoredAppStateV6 {
   undoDelete: unknown;
 }
 
+interface StoredAppStateV7 {
+  schemaVersion: 7;
+  project: unknown;
+  projects: unknown[];
+  undoDelete: unknown;
+}
+
 function validateLegacyAppState(value: unknown): value is LegacyAppState {
   if (
     !isRecord(value) ||
@@ -2537,7 +2671,7 @@ function validateStoredAppStateV2(value: unknown): value is StoredAppStateV2 {
 
 function validateStoredAppState(
   value: unknown,
-  schemaVersion: 3 | 4 | 5 | 6 | 7,
+  schemaVersion: 3 | 4 | 5 | 6 | 7 | 8,
 ): boolean {
   if (
     !isRecord(value) ||
@@ -2586,8 +2720,12 @@ function validateStoredAppStateV6(value: unknown): value is StoredAppStateV6 {
   return validateStoredAppState(value, 6);
 }
 
-export function validateAppState(value: unknown): value is AppState {
+function validateStoredAppStateV7(value: unknown): value is StoredAppStateV7 {
   return validateStoredAppState(value, 7);
+}
+
+export function validateAppState(value: unknown): value is AppState {
+  return validateStoredAppState(value, 8);
 }
 
 function legacyPlanBId(caseId: string, index: number): string {
@@ -2628,11 +2766,13 @@ function migrateCaseToV7(value: Record<string, unknown>): MoshimoCase {
         : source === 'agent' || legacyHumanCaseWasFilledByAgent
           ? 'agent'
           : 'human',
+    responseCandidates: [],
     planBOptions: legacyPlanBOptions.map((action, index) => ({
       id: legacyPlanBId(caseId, index),
       version: 1,
       source: savedLegacyPlanB ? 'human' : 'agent',
       action,
+      responseCandidates: [],
       response: savedLegacyPlanB
         ? {
             disposition: 'prepare',
@@ -2743,7 +2883,7 @@ function migrateUndoDeleteToV7(
 
 function migrateLegacyState(value: LegacyAppState): AppState {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     project: migrateProjectToV7(value.project as Record<string, unknown>),
     projects: [],
     undoDelete: migrateUndoDeleteToV7(
@@ -2756,7 +2896,7 @@ function migrateLegacyState(value: LegacyAppState): AppState {
 function migrateV2State(value: StoredAppStateV2): AppState {
   const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     project,
     projects: value.projects.map((storedProject) =>
       migrateProjectToV7(storedProject as Record<string, unknown>),
@@ -2768,7 +2908,7 @@ function migrateV2State(value: StoredAppStateV2): AppState {
 function migrateV3State(value: StoredAppStateV3): AppState {
   const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     project,
     projects: value.projects.map((storedProject) =>
       migrateProjectToV7(storedProject as Record<string, unknown>),
@@ -2780,7 +2920,7 @@ function migrateV3State(value: StoredAppStateV3): AppState {
 function migrateV4State(value: StoredAppStateV4): AppState {
   const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     project,
     projects: value.projects.map((storedProject) =>
       migrateProjectToV7(storedProject as Record<string, unknown>),
@@ -2792,7 +2932,7 @@ function migrateV4State(value: StoredAppStateV4): AppState {
 function migrateV5State(value: StoredAppStateV5): AppState {
   const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     project,
     projects: value.projects.map((storedProject) =>
       migrateProjectToV7(storedProject as Record<string, unknown>),
@@ -2804,12 +2944,51 @@ function migrateV5State(value: StoredAppStateV5): AppState {
 function migrateV6State(value: StoredAppStateV6): AppState {
   const project = migrateProjectToV7(value.project as Record<string, unknown>);
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     project,
     projects: value.projects.map((storedProject) =>
       migrateProjectToV7(storedProject as Record<string, unknown>),
     ),
     undoDelete: migrateUndoDeleteToV7(value.undoDelete, project.version),
+  };
+}
+
+function migrateV7Item(value: TimelineItem): TimelineItem {
+  return {
+    ...value,
+    tags: value.tags.map((tag) => ({
+      ...tag,
+      cases: tag.cases.map((caseItem) => ({
+        ...caseItem,
+        responseCandidates: [],
+        planBOptions: caseItem.planBOptions.map((option) => ({
+          ...option,
+          responseCandidates: [],
+        })),
+      })),
+    })),
+  };
+}
+
+function migrateV7Project(value: unknown): ProjectState {
+  const project = value as ProjectState;
+  return { ...project, timeline: project.timeline.map(migrateV7Item) };
+}
+
+function migrateV7State(value: StoredAppStateV7): AppState {
+  const project = migrateV7Project(value.project);
+  const undoDelete = value.undoDelete as DeletedTimelineItem | null;
+  return {
+    schemaVersion: 8,
+    project,
+    projects: value.projects.map(migrateV7Project),
+    undoDelete:
+      undoDelete === null
+        ? null
+        : {
+            ...undoDelete,
+            item: migrateV7Item(undoDelete.item),
+          },
   };
 }
 
@@ -2844,7 +3023,7 @@ function removeLegacyDebugProject(value: AppState): {
   const [project, ...remainingProjects] = projects;
   return {
     value: {
-      schemaVersion: 7,
+      schemaVersion: 8,
       project,
       projects: remainingProjects,
       undoDelete: null,
@@ -2981,7 +3160,16 @@ export function initializePersistence(
     }
     return activateStoredState(migrateV6State(parsed));
   }
-  if (parsed.schemaVersion !== 7) {
+  if (parsed.schemaVersion === 7) {
+    if (!validateStoredAppStateV7(parsed)) {
+      return recovery(
+        'invalid_shape',
+        'local.load: saved Plan data has an invalid structure.',
+      );
+    }
+    return activateStoredState(migrateV7State(parsed));
+  }
+  if (parsed.schemaVersion !== 8) {
     return recovery(
       'unsupported_version',
       'local.load: this saved Plan uses an unsupported version.',
@@ -4138,6 +4326,7 @@ function makeAgentCase(input: ReviewSuggestionCaseInput): MoshimoCase {
     suggestedActions: [...input.suggestedActions],
     suggestedActionSource: 'agent',
     planBOptions: [],
+    responseCandidates: [],
     response: null,
   };
 }
@@ -5757,6 +5946,7 @@ function updateCase(
     title: caseInput.title,
     suggestedActions: [...caseInput.suggestedActions],
     suggestedActionSource: 'agent',
+    responseCandidates: actionChanged ? [] : currentCase.responseCandidates,
     response: actionChanged ? null : currentCase.response,
   };
   const tags = [...item.tags];
@@ -5870,6 +6060,7 @@ function setCasePlanBOptions(
         version: 1,
         source: 'agent',
         action,
+        responseCandidates: [],
         response: null,
       };
     }
@@ -5879,6 +6070,7 @@ function setCasePlanBOptions(
       version: current.version + 1,
       source: 'agent',
       action,
+      responseCandidates: [],
       response: null,
     };
   });
@@ -5920,6 +6112,160 @@ function setCasePlanBOptions(
         .slice(planBOptions.length)
         .map((option) => option.id),
     ],
+  );
+}
+
+function normalizedResponseCandidates(
+  candidates: CaseResponseCandidate[],
+): CaseResponseCandidate[] | null {
+  if (candidates.length > 3) return null;
+  const dispositions = new Set<CandidateCaseDisposition>();
+  const normalized: CaseResponseCandidate[] = [];
+  for (const candidate of candidates) {
+    if (dispositions.has(candidate.disposition)) return null;
+    dispositions.add(candidate.disposition);
+    const actions = candidate.actions.map(clean);
+    const when = clean(candidate.when);
+    if (
+      actions.some(
+        (action) => textLength(action) < 1 || textLength(action) > 1200,
+      ) ||
+      textLength(actions.join('')) > 1200 ||
+      textLength(when) > 120
+    ) {
+      return null;
+    }
+    if (candidate.disposition === 'prepare') {
+      if (actions.length !== 1) return null;
+    } else if (actions.length > 1 || when !== '') {
+      return null;
+    }
+    normalized.push({
+      disposition: candidate.disposition,
+      actions,
+      when: candidate.disposition === 'prepare' ? when : '',
+    });
+  }
+  return normalized;
+}
+
+function responseCandidatesEqual(
+  left: CaseResponseCandidate[],
+  right: CaseResponseCandidate[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((candidate, index) => {
+      const other = right[index];
+      return (
+        other?.disposition === candidate.disposition &&
+        other.when === candidate.when &&
+        other.actions.length === candidate.actions.length &&
+        other.actions.every(
+          (action, actionIndex) => action === candidate.actions[actionIndex],
+        )
+      );
+    })
+  );
+}
+
+function setCaseResponseCandidates(
+  command: Extract<AppCommand, { type: 'case.responseCandidates.set' }>,
+): CommandResult {
+  const operation = 'case.responseCandidates.set';
+  const caseId = clean(command.payload.caseId);
+  const planBId =
+    command.payload.planBId === null ? null : clean(command.payload.planBId);
+  const location = caseLocation(caseId);
+  if (!location) {
+    return failure('NOT_FOUND', `${operation}: Case was not found.`, false);
+  }
+  const item = state.project.timeline[location.itemIndex];
+  const tag = item.tags[location.tagIndex];
+  if (tag.lifecycle !== 'active') {
+    return failure(
+      'INVALID_STATE',
+      `${operation}: resolved What-if history is read-only.`,
+      false,
+    );
+  }
+  const currentCase = tag.cases[location.caseIndex];
+  const projectVersionError = versionConflictIfStale(
+    command.payload.projectVersion,
+    state.project.version,
+    operation,
+    'Project',
+  );
+  if (projectVersionError) return projectVersionError;
+  const caseVersionError = versionConflictIfStale(
+    command.payload.caseVersion,
+    currentCase.version,
+    operation,
+    'Case',
+  );
+  if (caseVersionError) return caseVersionError;
+
+  const candidates = normalizedResponseCandidates(command.payload.candidates);
+  if (!candidates) {
+    return failure(
+      'INVALID_INPUT',
+      `${operation}: candidate fields do not match Covered, Accept, or Prepare.`,
+      true,
+    );
+  }
+
+  const planBIndex =
+    planBId === null
+      ? -1
+      : currentCase.planBOptions.findIndex((option) => option.id === planBId);
+  if (planBId !== null && planBIndex < 0) {
+    return failure('NOT_FOUND', `${operation}: Plan B was not found.`, false);
+  }
+  const currentCandidates =
+    planBIndex >= 0
+      ? currentCase.planBOptions[planBIndex].responseCandidates
+      : currentCase.responseCandidates;
+  if (responseCandidatesEqual(currentCandidates, candidates)) {
+    return noChanges();
+  }
+
+  const cases = [...tag.cases];
+  if (planBIndex >= 0) {
+    const planBOptions = [...currentCase.planBOptions];
+    const currentPlanB = planBOptions[planBIndex];
+    planBOptions[planBIndex] = {
+      ...currentPlanB,
+      version: currentPlanB.version + 1,
+      responseCandidates: candidates,
+    };
+    cases[location.caseIndex] = {
+      ...currentCase,
+      version: currentCase.version + 1,
+      planBOptions,
+    };
+  } else {
+    cases[location.caseIndex] = {
+      ...currentCase,
+      version: currentCase.version + 1,
+      responseCandidates: candidates,
+    };
+  }
+  const tags = [...item.tags];
+  tags[location.tagIndex] = { ...tag, cases };
+  const timeline = [...state.project.timeline];
+  timeline[location.itemIndex] = { ...item, tags };
+  return publish(
+    {
+      ...state,
+      undoDelete: null,
+      project: {
+        ...state.project,
+        version: state.project.version + 1,
+        timeline,
+        activeReviewRequest: null,
+      },
+    },
+    planBId === null ? [caseId] : [caseId, planBId],
   );
 }
 
@@ -5991,6 +6337,7 @@ function updateCaseAction(
     version: currentCase.version + 1,
     suggestedActions,
     suggestedActionSource: 'human',
+    responseCandidates: [],
     response: null,
   };
   const tags = [...item.tags];
@@ -6065,6 +6412,7 @@ function mutateHumanPlanB(
       version: 1,
       source: 'human',
       action,
+      responseCandidates: [],
       response: null,
     });
   } else {
@@ -6094,6 +6442,7 @@ function mutateHumanPlanB(
         version: current.version + 1,
         source: 'human',
         action,
+        responseCandidates: [],
         response: null,
       };
     }
@@ -6378,6 +6727,7 @@ export function dispatch(raw: unknown): CommandResult {
       command.type === 'case.update' ||
       command.type === 'case.action.update' ||
       command.type === 'case.planBOptions.set' ||
+      command.type === 'case.responseCandidates.set' ||
       command.type === 'case.planB.add' ||
       command.type === 'case.planB.update' ||
       command.type === 'case.planB.delete' ||
@@ -6876,6 +7226,7 @@ export function dispatch(raw: unknown): CommandResult {
           suggestedActions: ownAction ? [ownAction] : [],
           suggestedActionSource: ownAction ? 'human' : null,
           planBOptions: [],
+          responseCandidates: [],
           response: null,
         },
       ],
@@ -6916,6 +7267,9 @@ export function dispatch(raw: unknown): CommandResult {
   }
   if (command.type === 'case.planBOptions.set') {
     return setCasePlanBOptions(command);
+  }
+  if (command.type === 'case.responseCandidates.set') {
+    return setCaseResponseCandidates(command);
   }
   if (
     command.type === 'case.planB.add' ||
@@ -7001,6 +7355,7 @@ export function dispatch(raw: unknown): CommandResult {
       suggestedActions: ownAction ? [ownAction] : [],
       suggestedActionSource: ownAction ? 'human' : null,
       planBOptions: [],
+      responseCandidates: [],
       response: null,
     };
     const updatedTag: MoshimoTag = {
@@ -7130,6 +7485,10 @@ export function dispatch(raw: unknown): CommandResult {
       planBIndex >= 0
         ? currentCase.planBOptions[planBIndex].response
         : currentCase.response;
+    const currentCandidates =
+      planBIndex >= 0
+        ? currentCase.planBOptions[planBIndex].responseCandidates
+        : currentCase.responseCandidates;
     if (
       currentResponse?.disposition === response.disposition &&
       currentResponse.when === response.when &&
@@ -7137,7 +7496,8 @@ export function dispatch(raw: unknown): CommandResult {
       currentResponse.actions.length === response.actions.length &&
       currentResponse.actions.every(
         (action, index) => action === response.actions[index],
-      )
+      ) &&
+      currentCandidates.length === 0
     ) {
       return noChanges();
     }
@@ -7149,6 +7509,7 @@ export function dispatch(raw: unknown): CommandResult {
       planBOptions[planBIndex] = {
         ...currentPlanB,
         version: currentPlanB.version + 1,
+        responseCandidates: [],
         response,
       };
       cases[caseIndex] = {
@@ -7160,6 +7521,7 @@ export function dispatch(raw: unknown): CommandResult {
       cases[caseIndex] = {
         ...currentCase,
         version: currentCase.version + 1,
+        responseCandidates: [],
         response,
       };
     }
@@ -7349,6 +7711,7 @@ export function dispatch(raw: unknown): CommandResult {
             suggestedActions: [...caseInput.suggestedActions],
             suggestedActionSource: 'agent',
             planBOptions: [],
+            responseCandidates: [],
             response: null,
           };
         });

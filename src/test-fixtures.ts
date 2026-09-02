@@ -5,7 +5,7 @@ import {
 } from './app-state.ts';
 
 export const sampleTestState: AppState = {
-  schemaVersion: 7,
+  schemaVersion: 8,
   project: {
     id: 'project-test-trip',
     version: 1,
@@ -47,6 +47,7 @@ export const sampleTestState: AppState = {
                 ],
                 suggestedActionSource: 'agent',
                 planBOptions: [],
+                responseCandidates: [],
                 response: null,
               },
               {
@@ -59,6 +60,7 @@ export const sampleTestState: AppState = {
                 ],
                 suggestedActionSource: 'agent',
                 planBOptions: [],
+                responseCandidates: [],
                 response: null,
               },
               {
@@ -71,6 +73,7 @@ export const sampleTestState: AppState = {
                 ],
                 suggestedActionSource: 'agent',
                 planBOptions: [],
+                responseCandidates: [],
                 response: null,
               },
             ],
@@ -99,6 +102,7 @@ export const sampleTestState: AppState = {
                 ],
                 suggestedActionSource: 'agent',
                 planBOptions: [],
+                responseCandidates: [],
                 response: null,
               },
               {
@@ -109,6 +113,7 @@ export const sampleTestState: AppState = {
                 suggestedActions: ['Request another car or walk to the station.'],
                 suggestedActionSource: 'agent',
                 planBOptions: [],
+                responseCandidates: [],
                 response: null,
               },
             ],
@@ -145,6 +150,7 @@ export const sampleTestState: AppState = {
                 suggestedActions: ['Ask airport staff for the fastest valid lane.'],
                 suggestedActionSource: 'agent',
                 planBOptions: [],
+                responseCandidates: [],
                 response: null,
               },
             ],
@@ -171,6 +177,7 @@ export const sampleTestState: AppState = {
                 suggestedActions: ['Ask the airline whether the copy is accepted.'],
                 suggestedActionSource: 'agent',
                 planBOptions: [],
+                responseCandidates: [],
                 response: null,
               },
             ],
@@ -207,6 +214,7 @@ export const sampleTestState: AppState = {
                 suggestedActions: ['Rebook before arranging the onward journey.'],
                 suggestedActionSource: 'agent',
                 planBOptions: [],
+                responseCandidates: [],
                 response: null,
               },
             ],
