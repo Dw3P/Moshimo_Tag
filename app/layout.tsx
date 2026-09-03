@@ -15,14 +15,14 @@ export const metadata: Metadata = {
     description,
     type: 'website',
     images: metadataBase
-      ? [{ url: '/og.png', width: 1731, height: 909, alt: title }]
+      ? [{ url: '/moshimo_tag_main.jpg', width: 1500, height: 1000, alt: title }]
       : undefined,
   },
   twitter: {
     card: 'summary_large_image',
     title,
     description,
-    images: metadataBase ? ['/og.png'] : undefined,
+    images: metadataBase ? ['/moshimo_tag_main.jpg'] : undefined,
   },
 };
 

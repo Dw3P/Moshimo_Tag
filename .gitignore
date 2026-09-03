@@ -81,3 +81,6 @@ Thumbs.db
 # test runner artifacts
 /playwright-report/
 /test-results/
+
+# Local archival files
+/archives/
